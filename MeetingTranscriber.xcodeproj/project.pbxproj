@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		6C3934A12FB7D00000FC75DD /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6C3934A02FB7D00000FC75DD /* WhisperKit */; };
+		6C3934D02FB8B00000FC75DD /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6C3934D12FB8B00000FC75DD /* WhisperKit */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXCopyFilesBuildPhase section */
 		6C3934822FB784A100FC75DD /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
@@ -20,12 +25,31 @@
 
 /* Begin PBXFileReference section */
 		6C3934842FB784A100FC75DD /* MeetingTranscriber */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = MeetingTranscriber; sourceTree = BUILT_PRODUCTS_DIR; };
+		6C3934C22FB8A0DF00FC75DD /* MeetingTranscriberApp2.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MeetingTranscriberApp2.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		6C3934D22FB8B00000FC75DD /* Exceptions for "MeetingTranscriber" folder in "MeetingTranscriberApp2" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				main.swift,
+			);
+			target = 6C3934C12FB8A0DF00FC75DD /* MeetingTranscriberApp2 */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		6C3934862FB784A100FC75DD /* MeetingTranscriber */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				6C3934D22FB8B00000FC75DD /* Exceptions for "MeetingTranscriber" folder in "MeetingTranscriberApp2" target */,
+			);
 			path = MeetingTranscriber;
+			sourceTree = "<group>";
+		};
+		6C3934C32FB8A0DF00FC75DD /* MeetingTranscriberApp2 */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = MeetingTranscriberApp2;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -35,6 +59,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6C3934A12FB7D00000FC75DD /* WhisperKit in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6C3934BF2FB8A0DF00FC75DD /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				6C3934D02FB8B00000FC75DD /* WhisperKit in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -45,6 +78,7 @@
 			isa = PBXGroup;
 			children = (
 				6C3934862FB784A100FC75DD /* MeetingTranscriber */,
+				6C3934C32FB8A0DF00FC75DD /* MeetingTranscriberApp2 */,
 				6C3934852FB784A100FC75DD /* Products */,
 			);
 			sourceTree = "<group>";
@@ -53,6 +87,7 @@
 			isa = PBXGroup;
 			children = (
 				6C3934842FB784A100FC75DD /* MeetingTranscriber */,
+				6C3934C22FB8A0DF00FC75DD /* MeetingTranscriberApp2.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -77,10 +112,35 @@
 			);
 			name = MeetingTranscriber;
 			packageProductDependencies = (
+				6C3934A02FB7D00000FC75DD /* WhisperKit */,
 			);
 			productName = MeetingTranscriber;
 			productReference = 6C3934842FB784A100FC75DD /* MeetingTranscriber */;
 			productType = "com.apple.product-type.tool";
+		};
+		6C3934C12FB8A0DF00FC75DD /* MeetingTranscriberApp2 */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6C3934CA2FB8A0E000FC75DD /* Build configuration list for PBXNativeTarget "MeetingTranscriberApp2" */;
+			buildPhases = (
+				6C3934BE2FB8A0DF00FC75DD /* Sources */,
+				6C3934BF2FB8A0DF00FC75DD /* Frameworks */,
+				6C3934C02FB8A0DF00FC75DD /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				6C3934862FB784A100FC75DD /* MeetingTranscriber */,
+				6C3934C32FB8A0DF00FC75DD /* MeetingTranscriberApp2 */,
+			);
+			name = MeetingTranscriberApp2;
+			packageProductDependencies = (
+				6C3934D12FB8B00000FC75DD /* WhisperKit */,
+			);
+			productName = MeetingTranscriberApp2;
+			productReference = 6C3934C22FB8A0DF00FC75DD /* MeetingTranscriberApp2.app */;
+			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
 
@@ -95,6 +155,9 @@
 					6C3934832FB784A100FC75DD = {
 						CreatedOnToolsVersion = 26.5;
 					};
+					6C3934C12FB8A0DF00FC75DD = {
+						CreatedOnToolsVersion = 26.5;
+					};
 				};
 			};
 			buildConfigurationList = 6C39347F2FB784A100FC75DD /* Build configuration list for PBXProject "MeetingTranscriber" */;
@@ -106,18 +169,39 @@
 			);
 			mainGroup = 6C39347B2FB784A100FC75DD;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				6C39348E2FB7C5A000FC75DD /* XCRemoteSwiftPackageReference "WhisperKit" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 6C3934852FB784A100FC75DD /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				6C3934832FB784A100FC75DD /* MeetingTranscriber */,
+				6C3934C12FB8A0DF00FC75DD /* MeetingTranscriberApp2 */,
 			);
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		6C3934C02FB8A0DF00FC75DD /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		6C3934802FB784A100FC75DD /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		6C3934BE2FB8A0DF00FC75DD /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -249,6 +333,8 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records meeting audio so it can be transcribed locally on your Mac.";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -260,8 +346,76 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
+				CREATE_INFOPLIST_SECTION_IN_BINARY = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records meeting audio so it can be transcribed locally on your Mac.";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		6C3934CB2FB8A0E000FC75DD /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6TDVDVPFX3;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_ATSApplicationFontsPath = Fonts;
+				INFOPLIST_KEY_CFBundleDisplayName = Marty;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records meeting audio so it can be transcribed locally on your Mac.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.filip.meetingtranscriber.MeetingTranscriberApp2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		6C3934CC2FB8A0E000FC75DD /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6TDVDVPFX3;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_ATSApplicationFontsPath = Fonts;
+				INFOPLIST_KEY_CFBundleDisplayName = Marty;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Records meeting audio so it can be transcribed locally on your Mac.";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.filip.meetingtranscriber.MeetingTranscriberApp2;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -288,7 +442,40 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		6C3934CA2FB8A0E000FC75DD /* Build configuration list for PBXNativeTarget "MeetingTranscriberApp2" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6C3934CB2FB8A0E000FC75DD /* Debug */,
+				6C3934CC2FB8A0E000FC75DD /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		6C39348E2FB7C5A000FC75DD /* XCRemoteSwiftPackageReference "WhisperKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/WhisperKit";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		6C3934A02FB7D00000FC75DD /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6C39348E2FB7C5A000FC75DD /* XCRemoteSwiftPackageReference "WhisperKit" */;
+			productName = WhisperKit;
+		};
+		6C3934D12FB8B00000FC75DD /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 6C39348E2FB7C5A000FC75DD /* XCRemoteSwiftPackageReference "WhisperKit" */;
+			productName = WhisperKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 6C39347C2FB784A100FC75DD /* Project object */;
 }

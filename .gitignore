@@ -1,0 +1,32 @@
+# ---- Xcode ----
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.moved-aside
+
+# Per-user Xcode state (breakpoints, window layout, scheme prefs).
+# Shared schemes under xcshareddata/ are kept; only per-user data is ignored.
+xcuserdata/
+
+# ---- Swift Package Manager ----
+.build/
+.swiftpm/
+Packages/
+
+# ---- macOS ----
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ---- Test audio recordings ----
+# Scratch captures from testing the transcriber. These can contain real
+# recorded speech, so they are never committed.
+*.caf
+*.wav
+
+# ---- Local secrets ----
+# Real Google OAuth credentials. Copy GoogleSecrets.swift.example to
+# GoogleSecrets.swift and fill it in; the real file is never committed.
+MeetingTranscriberApp2/Services/GoogleSecrets.swift
