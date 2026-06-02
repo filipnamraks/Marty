@@ -36,21 +36,21 @@ enum Theme {
     static let recordText  = Color(red: 0xB9/255, green: 0x4C/255, blue: 0x38/255)
 }
 
-// Typography: we use the bundled Instrument Serif only for big display headlines
-// (its distinctive editorial look), and Apple's system fonts everywhere else —
-// San Francisco (UI), SF Mono (metadata), New York (body serif). The system
-// faces are far crisper and larger-feeling at small point sizes than the bundled
-// text fonts were, which is why body/UI text reverted to them. Instrument Serif
-// is the only custom face still resolved by name (see FontRegistrar).
+// Typography: the whole app uses Apple's system fonts — San Francisco for
+// headlines, body, and UI, and SF Mono for metadata. No custom/bundled fonts.
+// SF is crisp and well-hinted at every size, which is the clean look we want.
+// The helper names (serif/bodySerif) are kept for call-site stability even
+// though they now resolve to the system sans face.
 extension Font {
-    // Editorial display serif — Instrument Serif, for large headlines only.
+    // Display headlines — system San Francisco.
     static func serif(_ size: CGFloat, italic: Bool = false) -> Font {
-        .custom(italic ? "InstrumentSerif-Italic" : "InstrumentSerif-Regular", size: size)
+        let base = Font.system(size: size)
+        return italic ? base.italic() : base
     }
 
-    // Body prose — system serif (New York): editorial feel, crisp at small sizes.
+    // Body prose — system San Francisco.
     static func bodySerif(_ size: CGFloat, italic: Bool = false) -> Font {
-        let base = Font.system(size: size, design: .serif)
+        let base = Font.system(size: size)
         return italic ? base.italic() : base
     }
 
