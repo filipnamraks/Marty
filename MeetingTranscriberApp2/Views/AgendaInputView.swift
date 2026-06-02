@@ -15,7 +15,8 @@ struct AgendaInputView: View {
                 CommandKChip(label: "fetch agenda", action: onOpenPalette)
             }
             DeskBackground {
-                Sheet { sheetBody }
+                // Near edge-to-edge: a big canvas to write the agenda in.
+                Sheet(maxWidth: .infinity, horizontalMargin: 28) { sheetBody }
             }
         }
     }
@@ -34,7 +35,7 @@ struct AgendaInputView: View {
             Rectangle().fill(Theme.stroke).frame(height: 1).padding(.top, 16).padding(.bottom, 6)
 
             editor
-                .frame(minHeight: 220, alignment: .topLeading)
+                .frame(minHeight: 400, alignment: .topLeading)
 
             hintBar.padding(.top, 22)
 

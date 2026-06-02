@@ -39,6 +39,7 @@ struct CommandPalette: View {
             footer
         }
         .frame(width: 560)
+        .environment(\.colorScheme, .dark)   // native TextField renders light text on the dark panel
         .background(Color(hex: 0x141519))
         .clipShape(RoundedRectangle(cornerRadius: 13, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 13).stroke(Color(hex: 0x26282E), lineWidth: 1))

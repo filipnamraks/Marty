@@ -23,21 +23,23 @@ struct DeskBackground<Content: View>: View {
 // MARK: - Sheet
 
 /// The white document. A clean page that floats on the dark desk.
+/// Pass `maxWidth: .infinity` for a near-edge-to-edge writing surface.
 struct Sheet<Content: View>: View {
-    var width: CGFloat = 720
+    var maxWidth: CGFloat = 720
     var padding: EdgeInsets = .init(top: 56, leading: 72, bottom: 64, trailing: 72)
+    var horizontalMargin: CGFloat = 24
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         content()
-            .frame(maxWidth: width, alignment: .leading)
+            .frame(maxWidth: maxWidth, alignment: .leading)
             .padding(padding)
-            .frame(maxWidth: width)
+            .frame(maxWidth: maxWidth)
             .background(Theme.paper)
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             .shadow(color: .black.opacity(0.45), radius: 50, y: 30)
             .shadow(color: .black.opacity(0.28), radius: 14, y: 6)
-            .padding(.horizontal, 24)
+            .padding(.horizontal, horizontalMargin)
     }
 }
 
