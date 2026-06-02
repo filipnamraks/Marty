@@ -2,13 +2,20 @@ import SwiftUI
 
 /// Intake screen — the "Before" state from the Ledger mockup. Two cards:
 /// paste your agenda, or fetch it via a local source (calendar / notion / drive).
-/// The fetch card is a stub until Phase 3.
 struct AgendaInputView: View {
     var onAgendaReady: (Agenda) -> Void
     var onCancel: () -> Void
+    var calendar: CalendarStore
 
     @State private var pasteText: String = ""
     @State private var fetchInstruction: String = ""
+    @State private var fetchState: FetchState = .idle
+
+    enum FetchState: Equatable {
+        case idle
+        case loading
+        case error(String)
+    }
 
     var body: some View {
         ScrollView {
@@ -25,6 +32,25 @@ struct AgendaInputView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Theme.paper)
+        .overlay(alignment: .topLeading) { backButton }
+    }
+
+    private var backButton: some View {
+        Button(action: onCancel) {
+            HStack(spacing: 6) {
+                Text("←")
+                Text("Back")
+            }
+            .font(.ui(12, weight: .medium))
+            .foregroundStyle(Theme.inkSoft)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.white))
+            .overlay(Capsule().stroke(Theme.stroke, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 12)
+        .padding(.leading, 12)
     }
 
     private var header: some View {
@@ -127,14 +153,12 @@ struct AgendaInputView: View {
                     .stroke(Theme.stroke, lineWidth: 1)
             )
 
-            Text("Coming in Phase 3 — connect a source.")
-                .font(.mono(10))
-                .foregroundStyle(Theme.inkMuted)
+            fetchStatus
 
             HStack {
                 Spacer()
-                Button(action: {}) {
-                    Text("Fetch →")
+                Button(action: submitFetch) {
+                    Text(fetchState == .loading ? "Fetching…" : "Fetch →")
                         .font(.ui(13, weight: .medium))
                         .foregroundStyle(Theme.ink)
                         .padding(.horizontal, 18)
@@ -146,8 +170,8 @@ struct AgendaInputView: View {
                         )
                 }
                 .buttonStyle(.plain)
-                .disabled(true)
-                .opacity(0.4)
+                .disabled(disableFetch)
+                .opacity(disableFetch ? 0.4 : 1)
             }
         }
         .padding(20)
@@ -178,6 +202,44 @@ struct AgendaInputView: View {
     private func submitPaste() {
         let agenda = AgendaParser.parse(markdown: pasteText)
         onAgendaReady(agenda)
+    }
+
+    private var disableFetch: Bool {
+        fetchState == .loading ||
+            fetchInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder
+    private var fetchStatus: some View {
+        switch fetchState {
+        case .idle:
+            EmptyView()
+        case .loading:
+            Text("Looking across calendar & Notion…")
+                .font(.mono(10))
+                .foregroundStyle(Theme.inkMuted)
+        case .error(let msg):
+            Text(msg)
+                .font(.mono(10))
+                .foregroundStyle(Theme.recordText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func submitFetch() {
+        let intent = fetchInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !intent.isEmpty else { return }
+        fetchState = .loading
+        Task {
+            let resolver = AgendaResolver.standard(calendar: calendar)
+            do {
+                let agenda = try await resolver.resolve(intent: intent)
+                fetchState = .idle
+                onAgendaReady(agenda)
+            } catch {
+                fetchState = .error(error.localizedDescription)
+            }
+        }
     }
 
     private let samplePlaceholder = """

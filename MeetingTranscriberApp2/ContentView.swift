@@ -41,7 +41,8 @@ struct ContentView: View {
                                 page = .live
                                 if transcriber.state == .idle { transcriber.start() }
                             },
-                            onCancel: { pendingAgenda = false }
+                            onCancel: { pendingAgenda = false },
+                            calendar: calendar
                         )
                     } else if case .home = page {
                         HomeView(transcriber: transcriber,
