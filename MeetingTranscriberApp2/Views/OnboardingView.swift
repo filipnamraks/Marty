@@ -5,11 +5,11 @@ struct OnboardingView: View {
     @Environment(\.dismiss) private var dismiss
 
     enum Step: Int, CaseIterable {
-        case welcome, apiKey, permissions, done
+        case welcome, localModel, permissions, done
         var label: String {
             switch self {
             case .welcome: return "Welcome"
-            case .apiKey: return "API key"
+            case .localModel: return "Local model"
             case .permissions: return "Permissions"
             case .done: return "Ready"
             }
@@ -17,14 +17,14 @@ struct OnboardingView: View {
     }
 
     @State private var step: Step = .welcome
-    @State private var apiKey: String = SecureStorage.read(SecureStorage.anthropicAPIKey) ?? ""
-    @State private var testStatus: TestStatus = .idle
+    @State private var draftModel: String = LocalLLM.draftModel
+    @State private var refineModel: String = LocalLLM.refineModel
+    @State private var checkStatus: CheckStatus = .idle
 
-    enum TestStatus: Equatable {
-        case idle
-        case testing
-        case success
-        case failure(String)
+    enum CheckStatus: Equatable {
+        case idle, checking
+        case ok(missing: [String])
+        case unreachable
     }
 
     var body: some View {
@@ -68,7 +68,7 @@ struct OnboardingView: View {
     private var stepContent: some View {
         switch step {
         case .welcome: welcomeStep
-        case .apiKey: apiKeyStep
+        case .localModel: localModelStep
         case .permissions: permissionsStep
         case .done: doneStep
         }
@@ -84,7 +84,7 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("A local-first meeting transcriber. It captures your mic and the other side of the conversation, transcribes both, and asks Claude to make sense of it — all without anything leaving your Mac except the bit you choose to send for the summary.")
+            Text("A fully local meeting assistant. It captures your mic and the other side of the conversation, transcribes both, and fills in your meeting agenda with a model running on your own Mac — nothing leaves the machine.")
                 .font(.bodySerif(16, italic: true))
                 .foregroundStyle(Theme.inkSoft)
                 .lineSpacing(4)
@@ -102,17 +102,17 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    // MARK: API key
-    private var apiKeyStep: some View {
+    // MARK: Local model
+    private var localModelStep: some View {
         VStack(alignment: .leading, spacing: 18) {
             eyebrow("Step 02 · Marty's brain")
-            (Text("Add your ").font(.serif(36)) +
-             Text("Anthropic").font(.serif(36, italic: true)).foregroundStyle(Theme.accentDeep) +
-             Text(" key.").font(.serif(36)))
+            (Text("Runs on a ").font(.serif(36)) +
+             Text("local").font(.serif(36, italic: true)).foregroundStyle(Theme.accentDeep) +
+             Text(" model.").font(.serif(36)))
                 .foregroundStyle(Theme.ink)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Marty uses Claude to summarize meetings and polish transcripts. Each summary costs roughly $0.005. Your key is stored only in your macOS Keychain — never uploaded anywhere.")
+            Text("Marty uses Ollama to run a model on your Mac — private, offline, no API key. Install Ollama, then pull the two models below (a fast one for live drafts, a stronger one for the final polish).")
                 .font(.bodySerif(14, italic: true))
                 .foregroundStyle(Theme.inkSoft)
                 .lineSpacing(3)
@@ -120,35 +120,26 @@ struct OnboardingView: View {
                 .frame(maxWidth: 560, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("ANTHROPIC API KEY")
-                    .font(.mono(10))
-                    .tracking(1.6)
-                    .foregroundStyle(Theme.inkMuted)
-                SecureField("sk-ant-…", text: $apiKey)
-                    .textFieldStyle(.plain)
-                    .font(.mono(12))
-                    .padding(10)
-                    .background(Theme.sidebar)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                commandRow("ollama pull \(draftModel)")
+                commandRow("ollama pull \(refineModel)")
             }
-            .frame(maxWidth: 560)
+            .frame(maxWidth: 560, alignment: .leading)
 
             HStack(spacing: 12) {
-                Button(action: openConsole) {
+                Button(action: openOllama) {
                     HStack(spacing: 6) {
                         Image(systemName: "arrow.up.right.square").font(.system(size: 11))
-                        Text("Get a key at console.anthropic.com")
+                        Text("Get Ollama at ollama.com")
                     }
                     .font(.mono(11))
                     .foregroundStyle(Theme.accentDeep)
                 }
                 .buttonStyle(.plain)
                 Spacer()
-                Button(action: testKey) {
+                Button(action: checkOllama) {
                     HStack(spacing: 6) {
-                        Image(systemName: "checkmark.seal").font(.system(size: 11))
-                        Text("Test connection").font(.ui(11, weight: .medium))
+                        Image(systemName: "bolt.horizontal.circle").font(.system(size: 11))
+                        Text("Check Ollama").font(.ui(11, weight: .medium))
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
@@ -158,8 +149,8 @@ struct OnboardingView: View {
                     .foregroundStyle(Theme.ink)
                 }
                 .buttonStyle(.plain)
-                .disabled(apiKey.isEmpty || testStatus == .testing)
-                testStatusBadge
+                .disabled(checkStatus == .checking)
+                checkBadge
             }
             .frame(maxWidth: 560)
         }
@@ -168,22 +159,45 @@ struct OnboardingView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func commandRow(_ command: String) -> some View {
+        HStack {
+            Text(command).font(.mono(12)).foregroundStyle(Theme.ink)
+            Spacer()
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(command, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(10)
+        .background(Theme.sidebar)
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
     @ViewBuilder
-    private var testStatusBadge: some View {
-        switch testStatus {
+    private var checkBadge: some View {
+        switch checkStatus {
         case .idle: EmptyView()
-        case .testing:
+        case .checking:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("testing").font(.mono(10)).foregroundStyle(Theme.inkMuted)
+                Text("checking").font(.mono(10)).foregroundStyle(Theme.inkMuted)
             }
-        case .success:
-            HStack(spacing: 5) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
-                Text("works").font(.mono(10)).foregroundStyle(Theme.accentDeep)
+        case .ok(let missing):
+            if missing.isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
+                    Text("ready").font(.mono(10)).foregroundStyle(Theme.accentDeep)
+                }
+            } else {
+                Text("pull: \(missing.joined(separator: ", "))")
+                    .font(.mono(10)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(2)
             }
-        case .failure(let msg):
-            Text(msg).font(.mono(10)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(2)
+        case .unreachable:
+            Text("not running").font(.mono(10)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
         }
     }
 
@@ -264,7 +278,7 @@ struct OnboardingView: View {
              Text(".").font(.serif(48)))
                 .foregroundStyle(Theme.ink)
 
-            Text("Click \"New recording\" in the sidebar when you're ready. Marty will transcribe live and write the summary after you stop.")
+            Text("Click \"New recording\" to paste or fetch an agenda. Marty fills each section live as you talk, then polishes the whole document when you stop.")
                 .font(.bodySerif(15, italic: true))
                 .foregroundStyle(Theme.inkSoft)
                 .lineSpacing(3)
@@ -283,7 +297,7 @@ struct OnboardingView: View {
         VStack(alignment: .leading, spacing: 8) {
             tip("Use headphones during meetings so your mic doesn't pick up speaker audio.")
             tip("Transcripts auto-save to ~/Documents/MeetingTranscripts/ as Markdown.")
-            tip("Settings (gear icon, bottom of sidebar) lets you change model or update your key.")
+            tip("Settings (gear icon, bottom of sidebar) lets you change which local models Marty uses.")
         }
     }
 
@@ -310,8 +324,8 @@ struct OnboardingView: View {
                 .foregroundStyle(Theme.inkSoft)
             }
             Spacer()
-            if step == .apiKey {
-                Button("Skip for now") { complete(skipKey: true) }
+            if step == .localModel {
+                Button("Skip for now") { complete() }
                     .buttonStyle(.plain)
                     .font(.ui(13))
                     .foregroundStyle(Theme.inkMuted)
@@ -340,7 +354,7 @@ struct OnboardingView: View {
     private var primaryLabel: String {
         switch step {
         case .welcome: return "Get started"
-        case .apiKey: return "Continue"
+        case .localModel: return "Continue"
         case .permissions: return "Continue"
         case .done: return "Open Marty"
         }
@@ -349,14 +363,14 @@ struct OnboardingView: View {
     private func handlePrimary() {
         switch step {
         case .welcome:
-            step = .apiKey
-        case .apiKey:
-            persistKey()
+            step = .localModel
+        case .localModel:
+            persistModels()
             step = .permissions
         case .permissions:
             step = .done
         case .done:
-            complete(skipKey: false)
+            complete()
         }
     }
 
@@ -368,35 +382,31 @@ struct OnboardingView: View {
     }
 
     // MARK: Actions
-    private func persistKey() {
-        if apiKey.isEmpty {
-            SecureStorage.delete(SecureStorage.anthropicAPIKey)
-        } else {
-            SecureStorage.write(SecureStorage.anthropicAPIKey, value: apiKey)
-        }
+    private func persistModels() {
+        LocalLLM.draftModel = draftModel.trimmingCharacters(in: .whitespaces)
+        LocalLLM.refineModel = refineModel.trimmingCharacters(in: .whitespaces)
     }
 
-    private func complete(skipKey: Bool) {
-        if !skipKey { persistKey() }
+    private func complete() {
+        persistModels()
         UserDefaults.standard.set(true, forKey: "Marty.hasCompletedOnboarding")
         dismiss()
     }
 
-    private func openConsole() {
-        NSWorkspace.shared.open(URL(string: "https://console.anthropic.com/settings/keys")!)
+    private func openOllama() {
+        NSWorkspace.shared.open(URL(string: "https://ollama.com/download")!)
     }
 
-    private func testKey() {
-        SecureStorage.write(SecureStorage.anthropicAPIKey, value: apiKey)
-        testStatus = .testing
+    private func checkOllama() {
+        persistModels()
+        checkStatus = .checking
         Task {
-            do {
-                let engine = try AnthropicEngine.fromStorage()
-                let probe = TranscriptLine(timestamp: Date(), speaker: "You", text: "Hello, this is a connectivity test.")
-                _ = try await engine.summarize(transcript: [probe])
-                await MainActor.run { testStatus = .success }
-            } catch {
-                await MainActor.run { testStatus = .failure(error.localizedDescription) }
+            let health = await OllamaEngine.fromStorage().checkHealth()
+            await MainActor.run {
+                guard health.reachable else { checkStatus = .unreachable; return }
+                let want = [draftModel, refineModel].map { $0.trimmingCharacters(in: .whitespaces) }
+                let missing = want.filter { !$0.isEmpty && !health.installedModels.contains($0) }
+                checkStatus = .ok(missing: Array(Set(missing)))
             }
         }
     }

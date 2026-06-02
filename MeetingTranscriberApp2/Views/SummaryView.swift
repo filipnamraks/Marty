@@ -91,7 +91,7 @@ struct SummaryView: View {
 
     private var idleCopy: String {
         if !hasAPIKey {
-            return "Add your Anthropic API key in Settings to enable summaries."
+            return "Set up a local model in Settings to enable summaries."
         }
         if transcriber.lines.isEmpty {
             return "Record a session and Marty will write a summary when you stop."
@@ -99,9 +99,8 @@ struct SummaryView: View {
         return "Click Generate to have Marty read this session and write it up."
     }
 
-    private var hasAPIKey: Bool {
-        !(SecureStorage.read(SecureStorage.anthropicAPIKey) ?? "").isEmpty
-    }
+    // Local model is always available (Ollama); kept for call-site compatibility.
+    private var hasAPIKey: Bool { true }
 
     // MARK: Ready
     @ViewBuilder

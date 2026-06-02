@@ -6,17 +6,17 @@ struct SettingsView: View {
     var onConnectCalendar: () -> Void = {}
     @ObservedObject var calendar: CalendarStore
 
-    @State private var apiKey: String = ""
-    @State private var model: SummaryModel = .haiku45
-    @State private var testStatus: TestStatus = .idle
+    @State private var draftModel: String = LocalLLM.draftModel
+    @State private var refineModel: String = LocalLLM.refineModel
+    @State private var baseURL: String = LocalLLM.baseURLString
+    @State private var ollamaStatus: OllamaStatus = .idle
     @State private var nameField: String = ""
     @Bindable private var profile: UserProfile = .shared
 
-    enum TestStatus: Equatable {
-        case idle
-        case testing
-        case success
-        case failure(String)
+    enum OllamaStatus: Equatable {
+        case idle, checking
+        case ok(version: String, missing: [String])
+        case unreachable
     }
 
     var body: some View {
@@ -27,7 +27,7 @@ struct SettingsView: View {
             Divider().background(Theme.stroke)
             footer
         }
-        .frame(width: 540, height: 540)
+        .frame(width: 540, height: 560)
         .background(Theme.paper)
         .tint(Theme.ink)
         .onAppear(perform: loadFromStorage)
@@ -46,274 +46,159 @@ struct SettingsView: View {
 
     private var content: some View {
         ScrollView {
-            contentInner
-                .padding(.horizontal, 28)
-                .padding(.vertical, 22)
+            VStack(alignment: .leading, spacing: 24) {
+                profileSection
+                localModelSection
+                googleCalendarSection
+                notionSection
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 22)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var contentInner: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            // Profile
-            VStack(alignment: .leading, spacing: 8) {
-                Text("YOUR NAME")
-                    .font(.mono(10))
-                    .tracking(1.6)
-                    .foregroundStyle(Theme.inkMuted)
-                TextField("Filip Skarman", text: $nameField)
-                    .textFieldStyle(.plain)
-                    .font(.ui(13))
-                    .padding(10)
-                    .background(Theme.sidebar)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                Text("Used for greetings and as the [You] speaker label in transcripts.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
-            }
-
-            // API key
-            VStack(alignment: .leading, spacing: 8) {
-                Text("ANTHROPIC API KEY")
-                    .font(.mono(10))
-                    .tracking(1.6)
-                    .foregroundStyle(Theme.inkMuted)
-                SecureField("sk-ant-…", text: $apiKey)
-                    .textFieldStyle(.plain)
-                    .font(.mono(12))
-                    .padding(10)
-                    .background(Theme.sidebar)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                Text("Get one at console.anthropic.com → Settings → Keys. Stored locally in your macOS Keychain.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
-            }
-
-            // Google Calendar
-            googleCalendarSection
-
-            // Notion
-            notionSection
-
-            // Exa (web search)
-            exaSection
-
-            // Model picker
-            VStack(alignment: .leading, spacing: 8) {
-                Text("DEFAULT MODEL")
-                    .font(.mono(10))
-                    .tracking(1.6)
-                    .foregroundStyle(Theme.inkMuted)
-                Picker("", selection: $model) {
-                    ForEach(SummaryModel.allCases) { m in
-                        Text(m.displayName).tag(m)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.menu)
-                .padding(.horizontal, 4)
-                Text("Haiku is recommended: ~$0.005 per typical session.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
-            }
-
-            // Test button + status
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(spacing: 12) {
-                    Button(action: testKey) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.seal")
-                                .font(.system(size: 12))
-                            Text("Test connection")
-                                .font(.ui(12, weight: .medium))
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(Theme.sidebar)
-                        .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                        .clipShape(Capsule())
-                        .foregroundStyle(Theme.ink)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(apiKey.isEmpty || testStatus == .testing)
-                    testStatusBadge
-                }
-            }
-
-        }
-    }
-
-    @ViewBuilder
-    private var testStatusBadge: some View {
-        switch testStatus {
-        case .idle:
-            EmptyView()
-        case .testing:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Testing…").font(.mono(11)).foregroundStyle(Theme.inkMuted)
-            }
-        case .success:
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(Theme.accentDeep)
-                Text("Works").font(.mono(11)).foregroundStyle(Theme.accentDeep)
-            }
-        case .failure(let msg):
-            Text(msg)
-                .font(.mono(11))
-                .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
-                .lineLimit(2)
-        }
-    }
-
-    @State private var showNotionConnect: Bool = false
-    @State private var notionWorkspace: String? = SecureStorage.read(SecureStorage.notionWorkspaceName)
-    @State private var exaKey: String = SecureStorage.read(SecureStorage.exaApiKey) ?? ""
-    @State private var exaStatus: ExaConnectStatus = .idle
-
-    enum ExaConnectStatus: Equatable {
-        case idle, verifying, ok, failure(String)
-    }
-
-    private var exaSection: some View {
+    private var profileSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("EXA WEB SEARCH")
-                .font(.mono(10))
-                .tracking(1.6)
-                .foregroundStyle(Theme.inkMuted)
-            SecureField("exa-…", text: $exaKey)
+            fieldLabel("YOUR NAME")
+            TextField("Filip Skarman", text: $nameField)
                 .textFieldStyle(.plain)
-                .font(.mono(12))
+                .font(.ui(13))
                 .padding(10)
                 .background(Theme.sidebar)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
+            caption("Used for greetings and as the [You] speaker label in transcripts.")
+        }
+    }
+
+    private var localModelSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fieldLabel("LOCAL MODEL (OLLAMA)")
+            caption("Marty runs entirely on-device through Ollama — no API key, no cloud. Install Ollama and pull the models below.")
+
+            modelField(title: "Live draft", text: $draftModel)
+            modelField(title: "Final polish", text: $refineModel)
+
+            DisclosureGroup("Advanced") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("OLLAMA URL").font(.mono(9)).tracking(1.4).foregroundStyle(Theme.inkMuted)
+                    TextField(LocalLLM.defaultBaseURL, text: $baseURL)
+                        .textFieldStyle(.plain).font(.mono(12))
+                        .padding(8)
+                        .background(Theme.sidebar)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(.top, 6)
+            }
+            .font(.ui(12))
+            .tint(Theme.inkSoft)
+
             HStack(spacing: 12) {
-                Button(action: verifyAndSaveExa) {
+                Button(action: checkOllama) {
                     HStack(spacing: 8) {
-                        Image(systemName: "checkmark.seal")
-                            .font(.system(size: 12))
-                        Text("Save & test")
-                            .font(.ui(12, weight: .medium))
+                        Image(systemName: "bolt.horizontal.circle").font(.system(size: 12))
+                        Text("Check Ollama").font(.ui(12, weight: .medium))
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
                     .background(Theme.sidebar)
                     .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
                     .clipShape(Capsule())
                     .foregroundStyle(Theme.ink)
                 }
                 .buttonStyle(.plain)
-                .disabled(exaKey.isEmpty || exaStatus == .verifying)
-                exaBadge
-                Spacer()
-                if !exaKey.isEmpty {
-                    Button("Clear") {
-                        SecureStorage.delete(SecureStorage.exaApiKey)
-                        exaKey = ""
-                        exaStatus = .idle
-                    }
-                    .buttonStyle(.plain)
-                    .font(.ui(11))
-                    .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
-                }
+                .disabled(ollamaStatus == .checking)
+                ollamaBadge
             }
-            Text("Get a key at dashboard.exa.ai. Free tier: 1,000 searches/month. Marty uses Exa for real-time web data (weather, news, prices).")
-                .font(.bodySerif(13, italic: true))
-                .foregroundStyle(Theme.inkSoft)
+        }
+    }
+
+    private func modelField(title: String, text: Binding<String>) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.ui(12)).foregroundStyle(Theme.inkSoft)
+                .frame(width: 84, alignment: .leading)
+            TextField("gemma4:e2b", text: text)
+                .textFieldStyle(.plain).font(.mono(12))
+                .padding(8)
+                .background(Theme.sidebar)
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            Menu {
+                ForEach(LocalLLM.suggestions) { opt in
+                    Button(opt.label) { text.wrappedValue = opt.tag }
+                }
+            } label: {
+                Image(systemName: "chevron.down").font(.system(size: 11)).foregroundStyle(Theme.inkMuted)
+            }
+            .menuStyle(.borderlessButton)
+            .frame(width: 24)
         }
     }
 
     @ViewBuilder
-    private var exaBadge: some View {
-        switch exaStatus {
-        case .idle: EmptyView()
-        case .verifying:
+    private var ollamaBadge: some View {
+        switch ollamaStatus {
+        case .idle:
+            EmptyView()
+        case .checking:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.small)
-                Text("Testing…").font(.mono(11)).foregroundStyle(Theme.inkMuted)
+                Text("Checking…").font(.mono(11)).foregroundStyle(Theme.inkMuted)
             }
-        case .ok:
-            HStack(spacing: 6) {
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
-                Text("Works").font(.mono(11)).foregroundStyle(Theme.accentDeep)
+        case .ok(let version, let missing):
+            if missing.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
+                    Text("Connected · v\(version) · models ready").font(.mono(11)).foregroundStyle(Theme.accentDeep)
+                }
+            } else {
+                Text("Connected, but not pulled: " + missing.map { "ollama pull \($0)" }.joined(separator: ", "))
+                    .font(.mono(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(3)
             }
-        case .failure(let msg):
-            Text(msg)
-                .font(.mono(11))
-                .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
-                .lineLimit(2)
+        case .unreachable:
+            Text("Ollama not running — start it with `ollama serve`")
+                .font(.mono(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(2)
         }
     }
 
-    private func verifyAndSaveExa() {
-        let k = exaKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !k.isEmpty else { return }
-        SecureStorage.write(SecureStorage.exaApiKey, value: k)
-        exaStatus = .verifying
-        Task {
-            do {
-                try await ExaProvider(apiKey: k).verify()
-                await MainActor.run { exaStatus = .ok }
-            } catch {
-                await MainActor.run { exaStatus = .failure(error.localizedDescription) }
-            }
-        }
-    }
+    // MARK: Notion
+
+    @State private var showNotionConnect: Bool = false
+    @State private var notionWorkspace: String? = SecureStorage.read(SecureStorage.notionWorkspaceName)
 
     private var notionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("NOTION")
-                .font(.mono(10))
-                .tracking(1.6)
-                .foregroundStyle(Theme.inkMuted)
+            fieldLabel("NOTION")
             if let workspace = notionWorkspace,
-               let _ = SecureStorage.read(SecureStorage.notionToken) {
+               SecureStorage.read(SecureStorage.notionToken) != nil {
                 HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Theme.accentDeep)
-                    Text("Connected to \(workspace)")
-                        .font(.ui(12))
-                        .foregroundStyle(Theme.ink)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
+                    Text("Connected to \(workspace)").font(.ui(12)).foregroundStyle(Theme.ink)
                     Spacer()
                     Button("Disconnect") {
                         SecureStorage.delete(SecureStorage.notionToken)
                         SecureStorage.delete(SecureStorage.notionWorkspaceName)
                         notionWorkspace = nil
                     }
-                    .buttonStyle(.plain)
-                    .font(.ui(11))
-                    .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
+                    .buttonStyle(.plain).font(.ui(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
                 }
-                Text("Marty can search this workspace when you ask about people, companies, or notes.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
+                caption("Marty can pull a meeting agenda from this workspace by name.")
             } else {
-                HStack(spacing: 12) {
-                    Button(action: { showNotionConnect = true }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "doc.text")
-                                .font(.system(size: 12))
-                            Text("Connect Notion")
-                                .font(.ui(12, weight: .medium))
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(Theme.sidebar)
-                        .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                        .clipShape(Capsule())
-                        .foregroundStyle(Theme.ink)
+                Button(action: { showNotionConnect = true }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "doc.text").font(.system(size: 12))
+                        Text("Connect Notion").font(.ui(12, weight: .medium))
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(Theme.sidebar)
+                    .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
+                    .clipShape(Capsule())
+                    .foregroundStyle(Theme.ink)
                 }
-                Text("Marty searches your Notion when a question sounds like it's about your workspace.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
+                .buttonStyle(.plain)
+                caption("Optional — lets you fetch an agenda from a Notion page by describing it.")
             }
         }
         .sheet(isPresented: $showNotionConnect) {
@@ -325,128 +210,98 @@ struct SettingsView: View {
 
     private var googleCalendarSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("GOOGLE CALENDAR")
-                .font(.mono(10))
-                .tracking(1.6)
-                .foregroundStyle(Theme.inkMuted)
+            fieldLabel("GOOGLE CALENDAR")
             if let email = calendar.connectedEmail {
                 HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Theme.accentDeep)
-                    Text("Connected as \(email)")
-                        .font(.ui(12))
-                        .foregroundStyle(Theme.ink)
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
+                    Text("Connected as \(email)").font(.ui(12)).foregroundStyle(Theme.ink)
                     Spacer()
-                    Button("Disconnect") {
-                        calendar.disconnect()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.ui(11))
-                    .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
+                    Button("Disconnect") { calendar.disconnect() }
+                        .buttonStyle(.plain).font(.ui(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
                 }
-                Text("Today's events show up in your home dashboard.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
+                caption("Lets you fetch an agenda from an upcoming event by describing it.")
             } else {
-                HStack(spacing: 12) {
-                    Button(action: onConnectCalendar) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "calendar.circle")
-                                .font(.system(size: 12))
-                            Text("Connect Calendar")
-                                .font(.ui(12, weight: .medium))
-                        }
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(Theme.sidebar)
-                        .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                        .clipShape(Capsule())
-                        .foregroundStyle(Theme.ink)
+                Button(action: onConnectCalendar) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "calendar.circle").font(.system(size: 12))
+                        Text("Connect Calendar").font(.ui(12, weight: .medium))
                     }
-                    .buttonStyle(.plain)
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(Theme.sidebar)
+                    .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
+                    .clipShape(Capsule())
+                    .foregroundStyle(Theme.ink)
                 }
-                Text("Choose your source — Google, Notion, or Apple Calendar.")
-                    .font(.bodySerif(13, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
+                .buttonStyle(.plain)
+                caption("Optional — describe a meeting and Marty pulls its agenda.")
             }
         }
     }
 
     private var footer: some View {
         HStack {
-            Button("Clear key") {
-                SecureStorage.delete(SecureStorage.anthropicAPIKey)
-                apiKey = ""
-                testStatus = .idle
-            }
-            .buttonStyle(.plain)
-            .font(.ui(12))
-            .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
             if let onShowOnboarding {
                 Button("Show onboarding") { onShowOnboarding() }
-                    .buttonStyle(.plain)
-                    .font(.ui(12))
-                    .foregroundStyle(Theme.inkSoft)
-                    .padding(.leading, 12)
+                    .buttonStyle(.plain).font(.ui(12)).foregroundStyle(Theme.inkSoft)
             }
             Spacer()
             Button("Cancel") { dismiss() }
-                .buttonStyle(.plain)
-                .font(.ui(13))
-                .foregroundStyle(Theme.inkSoft)
+                .buttonStyle(.plain).font(.ui(13)).foregroundStyle(Theme.inkSoft)
             Button(action: saveAndDismiss) {
                 Text("Save")
                     .font(.ui(13, weight: .medium))
                     .foregroundStyle(Color.white)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 7)
-                    .background(Theme.ink)
-                    .clipShape(Capsule())
+                    .padding(.horizontal, 18).padding(.vertical, 7)
+                    .background(Theme.ink).clipShape(Capsule())
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 28)
-        .padding(.vertical, 16)
+        .padding(.horizontal, 28).padding(.vertical, 16)
+    }
+
+    // MARK: Helpers
+
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text).font(.mono(10)).tracking(1.6).foregroundStyle(Theme.inkMuted)
+    }
+    private func caption(_ text: String) -> some View {
+        Text(text).font(.bodySerif(13, italic: true)).foregroundStyle(Theme.inkSoft)
     }
 
     private func loadFromStorage() {
-        apiKey = SecureStorage.read(SecureStorage.anthropicAPIKey) ?? ""
-        if let raw = SecureStorage.read(SecureStorage.preferredModel),
-           let m = SummaryModel(rawValue: raw) {
-            model = m
-        }
+        draftModel = LocalLLM.draftModel
+        refineModel = LocalLLM.refineModel
+        baseURL = LocalLLM.baseURLString
         nameField = profile.name
     }
 
     private func saveAndDismiss() {
-        if apiKey.isEmpty {
-            SecureStorage.delete(SecureStorage.anthropicAPIKey)
-        } else {
-            SecureStorage.write(SecureStorage.anthropicAPIKey, value: apiKey)
-        }
-        SecureStorage.write(SecureStorage.preferredModel, value: model.rawValue)
+        persistModels()
         let trimmed = nameField.trimmingCharacters(in: .whitespaces)
-        if !trimmed.isEmpty {
-            profile.signIn(name: trimmed)
-        }
+        if !trimmed.isEmpty { profile.signIn(name: trimmed) }
         dismiss()
     }
 
-    private func testKey() {
-        // Persist temporarily so AnthropicEngine.fromStorage picks it up
-        SecureStorage.write(SecureStorage.anthropicAPIKey, value: apiKey)
-        SecureStorage.write(SecureStorage.preferredModel, value: model.rawValue)
-        testStatus = .testing
+    private func persistModels() {
+        LocalLLM.draftModel = draftModel.trimmingCharacters(in: .whitespaces)
+        LocalLLM.refineModel = refineModel.trimmingCharacters(in: .whitespaces)
+        let url = baseURL.trimmingCharacters(in: .whitespaces)
+        LocalLLM.baseURLString = url.isEmpty ? LocalLLM.defaultBaseURL : url
+    }
+
+    private func checkOllama() {
+        persistModels()
+        ollamaStatus = .checking
         Task {
-            do {
-                let engine = try AnthropicEngine.fromStorage(model: model)
-                let probe = TranscriptLine(timestamp: Date(),
-                                           speaker: "You",
-                                           text: "Hello, this is a connectivity test.")
-                _ = try await engine.summarize(transcript: [probe])
-                await MainActor.run { testStatus = .success }
-            } catch {
-                await MainActor.run { testStatus = .failure(error.localizedDescription) }
+            let health = await OllamaEngine.fromStorage().checkHealth()
+            await MainActor.run {
+                guard health.reachable, let version = health.version else {
+                    ollamaStatus = .unreachable
+                    return
+                }
+                let want = [draftModel, refineModel].map { $0.trimmingCharacters(in: .whitespaces) }
+                let missing = want.filter { !$0.isEmpty && !health.installedModels.contains($0) }
+                ollamaStatus = .ok(version: version, missing: Array(Set(missing)))
             }
         }
     }
