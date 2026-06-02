@@ -19,7 +19,21 @@ enum Theme {
     static let hover       = Color(red: 0xEC/255, green: 0xE6/255, blue: 0xD5/255)  // #ece6d5
 
     static let amber       = Color(red: 0x8A/255, green: 0x7A/255, blue: 0x55/255)  // for "Other" speaker
+    static let amberBright = Color(red: 0xC8/255, green: 0x9A/255, blue: 0x3E/255)  // live-section accent
+    static let liveBg      = Color(red: 0xFD/255, green: 0xFB/255, blue: 0xF3/255)  // section being filled
     static let terminalBg  = Color(red: 0x1A/255, green: 0x1A/255, blue: 0x1A/255)
+
+    // Status chip palette
+    static let chipDoneFg     = Color(red: 0x3F/255, green: 0x7D/255, blue: 0x4F/255)
+    static let chipDoneBg     = Color(red: 0xEE/255, green: 0xF6/255, blue: 0xEF/255)
+    static let chipDoneBorder = Color(red: 0xBC/255, green: 0xD9/255, blue: 0xC2/255)
+    static let chipLiveFg     = Color(red: 0xB0/255, green: 0x7A/255, blue: 0x1E/255)
+    static let chipLiveBg     = Color(red: 0xFB/255, green: 0xF3/255, blue: 0xDF/255)
+    static let chipLiveBorder = Color(red: 0xE6/255, green: 0xD4/255, blue: 0xA6/255)
+
+    // Recording pill
+    static let recordRed   = Color(red: 0xD8/255, green: 0x50/255, blue: 0x3A/255)
+    static let recordText  = Color(red: 0xB9/255, green: 0x4C/255, blue: 0x38/255)
 }
 
 extension Font {
