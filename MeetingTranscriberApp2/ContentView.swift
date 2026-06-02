@@ -7,12 +7,10 @@ struct ContentView: View {
     @State private var page: Page = .home
     @State private var loadedPast: PastTranscript? = nil
     @State private var selectedTab: MainTab = .transcript
-    @State private var rightSidebarVisible: Bool = true
     @State private var showSettings: Bool = false
     @State private var showOnboarding: Bool = ContentView.shouldShowOnboardingInitially()
     @State private var showCalendarPicker: Bool = false
     @State private var demo: DemoSession? = nil
-    @State private var pendingAgenda: Bool = false
     @StateObject private var calendar = CalendarStore()
 
     private let calendarRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
@@ -31,53 +29,32 @@ struct ContentView: View {
                         onOpenSettings: { showSettings = true },
                         onRequestRecording: requestRecording)
 
-            ZStack(alignment: .topTrailing) {
-                VStack(spacing: 0) {
-                    if pendingAgenda {
-                        AgendaInputView(
-                            onAgendaReady: { agenda in
-                                transcriber.agenda = agenda
-                                pendingAgenda = false
-                                page = .live
-                                if transcriber.state == .idle { transcriber.start() }
-                            },
-                            onCancel: { pendingAgenda = false },
-                            calendar: calendar
-                        )
-                    } else if case .home = page {
-                        HomeView(transcriber: transcriber,
-                                 page: $page,
-                                 sessions: $sessions,
-                                 onRequestRecording: requestRecording,
-                                 onConnectCalendar: { showCalendarPicker = true },
-                                 calendar: calendar)
-                    } else if case .library = page {
-                        LibraryView(sessions: $sessions, page: $page)
-                    } else if case .live = page, transcriber.agenda != nil {
-                        AgendaDocumentView(
-                            transcriber: transcriber,
-                            onFinish: { if transcriber.state == .running { transcriber.stop() } }
-                        )
-                    } else {
-                        MastheadView(transcriber: transcriber, pastSession: loadedPast)
-                        TabsBar(selected: $selectedTab)
-                        mainContent
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Theme.paper)
-
-                if !rightSidebarVisible && shouldShowRightSidebar {
-                    reopenButton
-                        .padding(.top, 12)
-                        .padding(.trailing, 12)
+            VStack(spacing: 0) {
+                if case .home = page {
+                    // Home landing IS the agenda intake — the new experience first.
+                    AgendaInputView(
+                        onAgendaReady: { agenda in
+                            transcriber.agenda = agenda
+                            page = .live
+                            if transcriber.state == .idle { transcriber.start() }
+                        },
+                        calendar: calendar
+                    )
+                } else if case .library = page {
+                    LibraryView(sessions: $sessions, page: $page)
+                } else if case .live = page, transcriber.agenda != nil {
+                    AgendaDocumentView(
+                        transcriber: transcriber,
+                        onFinish: { if transcriber.state == .running { transcriber.stop() } }
+                    )
+                } else {
+                    MastheadView(transcriber: transcriber, pastSession: loadedPast)
+                    TabsBar(selected: $selectedTab)
+                    mainContent
                 }
             }
-
-            if rightSidebarVisible && shouldShowRightSidebar {
-                rightSidebar
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
-            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.paper)
         }
         .background(Theme.paper)
         .tint(Theme.ink)
@@ -122,7 +99,6 @@ struct ContentView: View {
             }
             selectedTab = .transcript
         }
-        .animation(.easeInOut(duration: 0.2), value: rightSidebarVisible)
         .sheet(isPresented: $showSettings) {
             SettingsView(onShowOnboarding: {
                 showSettings = false
@@ -152,17 +128,9 @@ struct ContentView: View {
             transcriber.stop()
             return
         }
-        // Open the agenda intake screen — once an agenda is built, recording begins.
+        // Return to the home landing — which is the agenda intake.
         transcriber.agenda = nil
-        pendingAgenda = true
-    }
-
-    /// The right sidebar (activity feed) is hidden during the agenda-first flow.
-    /// Past sessions still get it.
-    private var shouldShowRightSidebar: Bool {
-        if pendingAgenda { return false }
-        if case .live = page, transcriber.agenda != nil { return false }
-        return true
+        page = .home
     }
 
     /// Triggered by the View → Run Demo Session menu (⇧⌘D). Plays a scripted
@@ -173,47 +141,6 @@ struct ContentView: View {
         let session = DemoSession(transcriber: transcriber)
         demo = session
         session.start()
-    }
-
-    @ViewBuilder
-    private var rightSidebar: some View {
-        let onCollapse = { rightSidebarVisible = false }
-        let onOpenSettings = { showSettings = true }
-        if case .home = page {
-            HomeRightSidebar(sessions: $sessions,
-                             transcriber: transcriber,
-                             onCollapse: onCollapse)
-        } else if case .library = page {
-            HomeRightSidebar(sessions: $sessions,
-                             transcriber: transcriber,
-                             onCollapse: onCollapse)
-        } else if case .past(let session) = page {
-            PastSidebar(session: session,
-                        loadedPast: loadedPast,
-                        transcriber: transcriber,
-                        onCollapse: onCollapse,
-                        onOpenSettings: onOpenSettings)
-        } else {
-            RightSidebarView(transcriber: transcriber,
-                             onCollapse: onCollapse,
-                             onOpenSettings: onOpenSettings)
-        }
-    }
-
-    private var reopenButton: some View {
-        Button(action: { rightSidebarVisible = true }) {
-            Image(systemName: "sidebar.right")
-                .font(.system(size: 13))
-                .foregroundStyle(Theme.inkSoft)
-                .padding(8)
-                .background(Theme.sidebar)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6).stroke(Theme.stroke, lineWidth: 1)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .help("Show right sidebar")
     }
 
     @ViewBuilder
@@ -245,57 +172,6 @@ struct ContentView: View {
 
     private func refreshSessions() {
         sessions = SessionsScanner.scan()
-    }
-}
-
-// Wrapper around RightSidebarView for the .past page. Adds a "Generate summary"
-// CTA when no cached summary exists.
-struct PastSidebar: View {
-    let session: SessionSummary
-    let loadedPast: PastTranscript?
-    @Bindable var transcriber: LiveTranscriber
-    var onCollapse: () -> Void
-    var onOpenSettings: () -> Void
-
-    var body: some View {
-        // RightSidebarView already handles all the states; if .idle and no key, it points to Settings.
-        // The only extra affordance: a clean "Generate summary" hook for past sessions.
-        RightSidebarView(
-            transcriber: transcriber,
-            onCollapse: onCollapse,
-            onOpenSettings: onOpenSettings
-        )
-        .overlay(alignment: .top) {
-            if case .idle = transcriber.summaryState,
-               transcriber.summary == nil,
-               let past = loadedPast, !past.lines.isEmpty {
-                HStack {
-                    Button(action: { generatePast(past) }) {
-                        Text("Generate summary for this session →")
-                            .font(.mono(11, weight: .medium))
-                            .foregroundStyle(Theme.accentDeep)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(Capsule().fill(Theme.paper))
-                            .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.top, 52)
-            }
-        }
-    }
-
-    private func generatePast(_ past: PastTranscript) {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        let lines: [TranscriptLine] = past.lines.map { line in
-            let ts = formatter.date(from: line.timestamp) ?? past.summary.date
-            return TranscriptLine(timestamp: ts, speaker: line.speaker, text: line.text)
-        }
-        transcriber.lines = lines
-        transcriber.transcriptFileURL = past.summary.id
-        Task { await transcriber.generateSummary() }
     }
 }
 

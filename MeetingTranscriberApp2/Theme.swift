@@ -36,39 +36,32 @@ enum Theme {
     static let recordText  = Color(red: 0xB9/255, green: 0x4C/255, blue: 0x38/255)
 }
 
-// Font names below are the PostScript names of the static .ttf files bundled in
-// Fonts/ (registered via INFOPLIST_KEY_ATSApplicationFontsPath = Fonts). They were
-// verified with `fc-scan --format %{postscriptname}`. SwiftUI's Font.custom matches
-// by PostScript name, so these must stay in sync with the bundled files.
+// Typography: we use the bundled Instrument Serif only for big display headlines
+// (its distinctive editorial look), and Apple's system fonts everywhere else —
+// San Francisco (UI), SF Mono (metadata), New York (body serif). The system
+// faces are far crisper and larger-feeling at small point sizes than the bundled
+// text fonts were, which is why body/UI text reverted to them. Instrument Serif
+// is the only custom face still resolved by name (see FontRegistrar).
 extension Font {
-    // Editorial serif — Instrument Serif for headlines
+    // Editorial display serif — Instrument Serif, for large headlines only.
     static func serif(_ size: CGFloat, italic: Bool = false) -> Font {
         .custom(italic ? "InstrumentSerif-Italic" : "InstrumentSerif-Regular", size: size)
     }
 
-    // Body prose — Newsreader 16pt optical size (used italic in mockup for editorial copy)
+    // Body prose — system serif (New York): editorial feel, crisp at small sizes.
     static func bodySerif(_ size: CGFloat, italic: Bool = false) -> Font {
-        .custom(italic ? "Newsreader16pt-Italic" : "Newsreader16pt-Regular", size: size)
+        let base = Font.system(size: size, design: .serif)
+        return italic ? base.italic() : base
     }
 
-    // UI sans — Inter
+    // UI sans — system San Francisco.
     static func ui(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        let name: String
-        switch weight {
-        case .bold, .heavy, .black: name = "Inter-Bold"
-        case .semibold: name = "Inter-SemiBold"
-        case .medium: name = "Inter-Medium"
-        case .light, .thin, .ultraLight: name = "Inter-Light"
-        default: name = "Inter-Regular"
-        }
-        return .custom(name, size: size)
+        .system(size: size, weight: weight)
     }
 
-    // Technical / metadata — JetBrains Mono
+    // Technical / metadata — system monospaced (SF Mono).
     static func mono(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        let name = weight == .medium || weight == .semibold || weight == .bold
-            ? "JetBrainsMono-Medium" : "JetBrainsMono-Regular"
-        return .custom(name, size: size)
+        .system(size: size, weight: weight, design: .monospaced)
     }
 }
 
