@@ -225,6 +225,164 @@ final class AnthropicEngine: SummaryEngine {
         }
     }
 
+    // MARK: - Agenda fill
+
+    enum FillMode: String {
+        case draft
+        case refined
+    }
+
+    struct AgendaFillResult {
+        var sections: [UUID: String]
+        var offAgenda: [String]
+    }
+
+    /// Asks Claude to write, per agenda section, what the meeting has covered under
+    /// that heading so far. Returns updated text keyed by section id, plus any
+    /// substantive off-agenda discussion as a "parking lot" list.
+    /// - mode .draft: terse, written for live updating. Empty string if not covered yet.
+    /// - mode .refined: polished prose / bullets, suitable as final deliverable.
+    func fillAgenda(agenda: Agenda, transcript: [TranscriptLine], mode: FillMode) async throws -> AgendaFillResult {
+        guard !transcript.isEmpty else { throw SummaryEngineError.emptyTranscript }
+
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm:ss"
+        let serialized = transcript.map { line in
+            "[\(timeFormatter.string(from: line.timestamp))] [\(line.speaker)] \(line.text)"
+        }.joined(separator: "\n")
+
+        struct AgendaSectionPayload: Encodable {
+            let id: String
+            let heading: String
+            let subheading: String?
+            let originalBullets: [String]
+        }
+        let payload: [String: Any] = [
+            "title": agenda.title,
+            "sections": agenda.sections.map { s in
+                [
+                    "id": s.id.uuidString,
+                    "heading": s.heading,
+                    "subheading": s.subheading as Any,
+                    "originalBullets": s.originalBullets,
+                ] as [String: Any]
+            },
+        ]
+        let payloadJSON = String(
+            data: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+            encoding: .utf8
+        ) ?? "{}"
+
+        let styleNote: String
+        switch mode {
+        case .draft:
+            styleNote = """
+            Write SHORT, factual bullets that capture only what was actually said. \
+            Each section's "content" is a markdown bullet list using "- " markers. \
+            If a section was not discussed yet, return "" (empty string). \
+            Be honest — do not invent. Match the user's voice (their originalBullets show their preferred style).
+            """
+        case .refined:
+            styleNote = """
+            Polish each section into a clean, readable summary. Use markdown bullets ("- "). \
+            Where the discussion produced concrete elements (proposal, risk, decision, owner, \
+            next step, deadline), label the bullet with a bold prefix like \
+            "- **Decision:** …" / "- **Owner:** …" / "- **Risk:** …" / "- **Next step:** …". \
+            If a section was not discussed, return the exact string "Not covered in this meeting." \
+            Do not invent — only include what's in the transcript.
+            """
+        }
+
+        let system = """
+        You are Marty, an editorial meeting analyst. The user has an agenda; you are filling \
+        in each section based on what was actually discussed in the transcript.
+
+        Respond ONLY with a JSON object, no prose around it:
+        {
+          "sections": { "<section_id>": "<markdown content for that section>", ... },
+          "offAgenda": ["short bullet of a substantive discussion that didn't map to any heading", ...]
+        }
+
+        Rules:
+        - The keys in "sections" MUST exactly match the section ids provided in the input.
+        - Include EVERY section id, even if the value is "".
+        - \(styleNote)
+        - "offAgenda" captures topics that consumed real meeting time but don't belong under \
+          any heading. Empty array if everything mapped. 3-line max per item.
+        - Never invent facts, decisions, or quotes not in the transcript.
+        """
+
+        let userMessage = """
+        AGENDA:
+        \(payloadJSON)
+
+        TRANSCRIPT:
+        \(serialized)
+        """
+
+        let body: [String: Any] = [
+            "model": model.rawValue,
+            "max_tokens": 4096,
+            "system": system,
+            "messages": [["role": "user", "content": userMessage]],
+        ]
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw SummaryEngineError.transport(error)
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw SummaryEngineError.http(status: -1, message: "no http response")
+        }
+        guard http.statusCode == 200 else {
+            let msg = String(data: data, encoding: .utf8) ?? "<no body>"
+            throw SummaryEngineError.http(status: http.statusCode, message: msg)
+        }
+
+        struct APIContent: Decodable { let type: String; let text: String }
+        struct APIEnvelope: Decodable { let content: [APIContent] }
+        let envelope: APIEnvelope
+        do {
+            envelope = try JSONDecoder().decode(APIEnvelope.self, from: data)
+        } catch {
+            throw SummaryEngineError.decoding("envelope: \(error.localizedDescription)")
+        }
+        guard let text = envelope.content.first(where: { $0.type == "text" })?.text else {
+            throw SummaryEngineError.decoding("no text content in response")
+        }
+
+        let jsonText = stripFences(text)
+        guard let jsonData = jsonText.data(using: .utf8) else {
+            throw SummaryEngineError.decoding("text not utf8")
+        }
+
+        struct Response: Decodable {
+            let sections: [String: String]
+            let offAgenda: [String]?
+        }
+        let parsed: Response
+        do {
+            parsed = try JSONDecoder().decode(Response.self, from: jsonData)
+        } catch {
+            throw SummaryEngineError.decoding("agenda fill JSON: \(error.localizedDescription) — raw: \(jsonText.prefix(200))")
+        }
+
+        var byId: [UUID: String] = [:]
+        for (key, value) in parsed.sections {
+            if let uuid = UUID(uuidString: key) { byId[uuid] = value }
+        }
+        return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
+    }
+
     // Interpret a user's free-text instruction into structured export routing.
     struct ExportRouting: Decodable {
         let folder: String?

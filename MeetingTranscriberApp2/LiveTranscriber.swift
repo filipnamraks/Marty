@@ -41,6 +41,12 @@ final class LiveTranscriber {
     var cleaningState: SummaryState = .idle
     var sessionContext: String = ""
 
+    // Agenda-first flow (Phase 2). When non-nil, the UI renders AgendaDocumentView
+    // and AgendaFiller drives periodic LLM fills against `lines`.
+    var agenda: Agenda?
+    var agendaFillState: SummaryState = .idle
+    private var agendaFiller: AgendaFiller?
+
     /// Fired once when a recording begins (state transitions idle → loading).
     /// Used by LiveAssistant to clear its per-meeting conversation memory.
     var onRecordingStart: (() -> Void)?
@@ -90,8 +96,18 @@ final class LiveTranscriber {
 
         Task {
             do {
-                let trimmed = self.sessionContext.trimmingCharacters(in: .whitespacesAndNewlines)
-                let loadedEngine = try await WhisperKitEngine(initialPrompt: trimmed.isEmpty ? nil : trimmed)
+                // Build the initial prompt: prefer agenda headings (live agenda-first flow),
+                // fall back to sessionContext (legacy / past sessions).
+                let prompt: String? = {
+                    if let agenda = self.agenda {
+                        let parts = ([agenda.title] + agenda.sections.map { $0.heading })
+                            .filter { !$0.isEmpty }
+                        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+                    }
+                    let trimmed = self.sessionContext.trimmingCharacters(in: .whitespacesAndNewlines)
+                    return trimmed.isEmpty ? nil : trimmed
+                }()
+                let loadedEngine = try await WhisperKitEngine(initialPrompt: prompt)
                 self.engine = loadedEngine
 
                 let transcriptsDir = SessionsScanner.transcriptsDir
@@ -176,6 +192,13 @@ final class LiveTranscriber {
                 self.state = .running
                 self.statusMessage = "Listening"
                 self.appendEvent(.sessionStarted)
+
+                // Kick off live agenda fill loop if an agenda is loaded.
+                if self.agenda != nil {
+                    let filler = AgendaFiller(transcriber: self)
+                    self.agendaFiller = filler
+                    filler.start()
+                }
             } catch {
                 self.state = .idle
                 self.statusMessage = "Failed to start: \(error.localizedDescription)"
@@ -207,10 +230,19 @@ final class LiveTranscriber {
             self.state = .idle
             self.statusMessage = "Ready when you are"
 
-            // Kick off the LLM summary AND transcript cleaning in parallel.
-            // UI flips both to loading; each finishes independently.
-            Task { await self.generateSummary() }
-            Task { await self.cleanTranscript() }
+            // If running the agenda-first flow, run the final polish pass.
+            // Otherwise fall back to the legacy summary + cleanTranscript pipeline.
+            if self.agenda != nil, let filler = self.agendaFiller {
+                self.agendaFillState = .loading
+                Task {
+                    filler.stop()
+                    await filler.finalize()
+                    await MainActor.run { self.agendaFillState = .ready }
+                }
+            } else {
+                Task { await self.generateSummary() }
+                Task { await self.cleanTranscript() }
+            }
         }
     }
 

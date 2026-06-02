@@ -10,10 +10,10 @@ struct ContentView: View {
     @State private var rightSidebarVisible: Bool = true
     @State private var showSettings: Bool = false
     @State private var showOnboarding: Bool = ContentView.shouldShowOnboardingInitially()
-    @State private var showPreflight: Bool = false
     @State private var showCalendarPicker: Bool = false
+    @State private var demo: DemoSession? = nil
+    @State private var pendingAgenda: Bool = false
     @StateObject private var calendar = CalendarStore()
-    @StateObject private var assistant = LiveAssistant()
 
     private let calendarRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
 
@@ -33,7 +33,17 @@ struct ContentView: View {
 
             ZStack(alignment: .topTrailing) {
                 VStack(spacing: 0) {
-                    if case .home = page {
+                    if pendingAgenda {
+                        AgendaInputView(
+                            onAgendaReady: { agenda in
+                                transcriber.agenda = agenda
+                                pendingAgenda = false
+                                page = .live
+                                if transcriber.state == .idle { transcriber.start() }
+                            },
+                            onCancel: { pendingAgenda = false }
+                        )
+                    } else if case .home = page {
                         HomeView(transcriber: transcriber,
                                  page: $page,
                                  sessions: $sessions,
@@ -42,6 +52,11 @@ struct ContentView: View {
                                  calendar: calendar)
                     } else if case .library = page {
                         LibraryView(sessions: $sessions, page: $page)
+                    } else if case .live = page, transcriber.agenda != nil {
+                        AgendaDocumentView(
+                            transcriber: transcriber,
+                            onFinish: { if transcriber.state == .running { transcriber.stop() } }
+                        )
                     } else {
                         MastheadView(transcriber: transcriber, pastSession: loadedPast)
                         TabsBar(selected: $selectedTab)
@@ -51,14 +66,14 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Theme.paper)
 
-                if !rightSidebarVisible {
+                if !rightSidebarVisible && shouldShowRightSidebar {
                     reopenButton
                         .padding(.top, 12)
                         .padding(.trailing, 12)
                 }
             }
 
-            if rightSidebarVisible {
+            if rightSidebarVisible && shouldShowRightSidebar {
                 rightSidebar
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
@@ -68,8 +83,9 @@ struct ContentView: View {
         .frame(minWidth: 1100, minHeight: 720)
         .onAppear {
             refreshSessions()
-            assistant.attach(transcriber: transcriber)
-            assistant.start()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .martyRunDemo)) { _ in
+            runDemo()
         }
         .task { await calendar.refresh() }
         .onReceive(calendarRefreshTimer) { _ in
@@ -124,12 +140,6 @@ struct ContentView: View {
         .sheet(isPresented: $showOnboarding) {
             OnboardingView()
         }
-        .sheet(isPresented: $showPreflight) {
-            SessionPreflightView(transcriber: transcriber, onStart: {
-                page = .live
-                if transcriber.state == .idle { transcriber.start() }
-            })
-        }
         .sheet(isPresented: $showCalendarPicker) {
             CalendarPickerSheet(calendar: calendar)
         }
@@ -141,7 +151,27 @@ struct ContentView: View {
             transcriber.stop()
             return
         }
-        showPreflight = true
+        // Open the agenda intake screen — once an agenda is built, recording begins.
+        transcriber.agenda = nil
+        pendingAgenda = true
+    }
+
+    /// The right sidebar (activity feed) is hidden during the agenda-first flow.
+    /// Past sessions still get it.
+    private var shouldShowRightSidebar: Bool {
+        if pendingAgenda { return false }
+        if case .live = page, transcriber.agenda != nil { return false }
+        return true
+    }
+
+    /// Triggered by the View → Run Demo Session menu (⇧⌘D). Plays a scripted
+    /// conversation through the live UI. No-op if a real session is running.
+    private func runDemo() {
+        guard transcriber.state == .idle else { return }
+        page = .live
+        let session = DemoSession(transcriber: transcriber)
+        demo = session
+        session.start()
     }
 
     @ViewBuilder
@@ -270,4 +300,9 @@ struct PastSidebar: View {
 
 #Preview {
     ContentView()
+}
+
+extension Notification.Name {
+    /// Posted by the View → Run Demo Session menu (⇧⌘D).
+    static let martyRunDemo = Notification.Name("marty.runDemo")
 }
