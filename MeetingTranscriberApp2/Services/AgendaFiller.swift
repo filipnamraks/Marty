@@ -73,17 +73,18 @@ final class AgendaFiller {
         if t.state == .running { t.agenda = agenda }
     }
 
-    private func runFill(agenda: inout Agenda, transcript: [TranscriptLine], mode: AnthropicEngine.FillMode) async {
-        let engine: AnthropicEngine
-        do { engine = try AnthropicEngine.fromStorage() }
-        catch { return }
+    private func runFill(agenda: inout Agenda, transcript: [TranscriptLine], mode: OllamaEngine.FillMode) async {
+        let engine = OllamaEngine.fromStorage()
 
-        let result: AnthropicEngine.AgendaFillResult
+        let result: OllamaEngine.AgendaFillResult
         do {
             result = try await engine.fillAgenda(agenda: agenda, transcript: transcript, mode: mode)
         } catch {
+            // Surface connection/model errors so the UI isn't silently empty.
+            transcriber?.agendaFillState = .error((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             return
         }
+        transcriber?.agendaFillState = .ready
 
         // Find the "active" section — earliest index that has content in the new
         // result but not before, used by the UI to highlight "writing now".

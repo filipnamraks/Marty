@@ -69,15 +69,10 @@ final class AgendaResolver {
     // MARK: - Picker
 
     private func pickCandidate(intent: String, candidates: [AgendaCandidate]) async throws -> String {
-        // Single-candidate shortcut — no need to spend a Claude call.
+        // Single-candidate shortcut — no need to spend an LLM call.
         if candidates.count == 1 { return candidates[0].compositeId }
 
-        let engine: AnthropicEngine
-        do { engine = try AnthropicEngine.fromStorage() }
-        catch { return candidates[0].compositeId }  // no key → take the top score
-
         let payload: [String: Any] = [
-            "intent": intent,
             "candidates": candidates.map { c in
                 [
                     "id": c.compositeId,
@@ -88,70 +83,20 @@ final class AgendaResolver {
                 ] as [String: Any]
             }
         ]
-        let payloadJSON = String(
-            data: try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+        let candidatesJSON = String(
+            data: (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data(),
             encoding: .utf8
         ) ?? "{}"
 
-        let system = """
-        You are an agenda picker. The user typed a one-line instruction describing the meeting they're \
-        about to have. You're given a list of candidate items (calendar events or Notion pages). \
-        Pick the single best match.
-
-        Respond ONLY with a JSON object — no prose:
-        { "id": "<the chosen candidate id, exactly as given>" }
-
-        Rules:
-        - Prefer candidates whose title closely matches the user's intent.
-        - When the intent mentions a time ("at 3pm", "today", "tomorrow morning"), prefer the calendar \
-          event closest to that time. Use the candidate "when" field.
-        - If nothing matches well, return the closest title match anyway. Always return something.
-        - The id MUST be one of the provided ids verbatim, including the source prefix (e.g. "calendar:abc123").
-        """
-
-        let body: [String: Any] = [
-            "model": "claude-haiku-4-5",
-            "max_tokens": 200,
-            "system": system,
-            "messages": [["role": "user", "content": payloadJSON]],
-        ]
-
-        var request = URLRequest(url: URL(string: "https://api.anthropic.com/v1/messages")!)
-        request.httpMethod = "POST"
-        request.setValue(try engineAPIKey(), forHTTPHeaderField: "x-api-key")
-        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            let msg = String(data: data, encoding: .utf8) ?? "<no body>"
-            throw ResolverError.pickerFailed(msg)
+        do {
+            let id = try await OllamaEngine.fromStorage()
+                .pickAgendaCandidate(intent: intent, candidatesJSON: candidatesJSON)
+            // Guard against a hallucinated id — fall back to the top-scored candidate.
+            return candidates.contains { $0.compositeId == id } ? id : candidates[0].compositeId
+        } catch {
+            // Local model unavailable → don't fail intake; take the best fuzzy match.
+            return candidates[0].compositeId
         }
-
-        struct APIContent: Decodable { let type: String; let text: String }
-        struct APIEnvelope: Decodable { let content: [APIContent] }
-        let envelope = try JSONDecoder().decode(APIEnvelope.self, from: data)
-        guard let text = envelope.content.first(where: { $0.type == "text" })?.text else {
-            throw ResolverError.pickerFailed("no text content")
-        }
-        let cleaned = text
-            .replacingOccurrences(of: "```json", with: "")
-            .replacingOccurrences(of: "```", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let jd = cleaned.data(using: .utf8) else {
-            throw ResolverError.pickerFailed("not utf8")
-        }
-        struct Pick: Decodable { let id: String }
-        let pick = try JSONDecoder().decode(Pick.self, from: jd)
-        return pick.id
-    }
-
-    private func engineAPIKey() throws -> String {
-        guard let key = SecureStorage.read(SecureStorage.anthropicAPIKey), !key.isEmpty else {
-            throw ResolverError.pickerFailed("no API key")
-        }
-        return key
     }
 
     // MARK: - Fetch + parse

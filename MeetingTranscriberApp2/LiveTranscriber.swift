@@ -259,7 +259,7 @@ final class LiveTranscriber {
         cleaningState = .loading
         appendEvent(.info, detail: "cleaning transcript")
         do {
-            let engine = try AnthropicEngine.fromStorage()
+            let engine = OllamaEngine.fromStorage()
             let cleaned = try await engine.cleanTranscript(transcript: lines)
             cleanedLines = cleaned
             cleaningState = .ready
@@ -277,9 +277,9 @@ final class LiveTranscriber {
     func generateSummary() async {
         guard !lines.isEmpty else { return }
         summaryState = .loading
-        appendEvent(.summaryUpdated, detail: "calling Anthropic")
+        appendEvent(.summaryUpdated, detail: "calling local model")
         do {
-            let engine = try AnthropicEngine.fromStorage()
+            let engine = OllamaEngine.fromStorage()
             let result = try await engine.summarize(transcript: lines)
             summary = result
             summaryState = .ready

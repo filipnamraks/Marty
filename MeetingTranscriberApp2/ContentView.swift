@@ -16,9 +16,7 @@ struct ContentView: View {
     private let calendarRefreshTimer = Timer.publish(every: 120, on: .main, in: .common).autoconnect()
 
     private static func shouldShowOnboardingInitially() -> Bool {
-        let completed = UserDefaults.standard.bool(forKey: "Marty.hasCompletedOnboarding")
-        let hasKey = !((SecureStorage.read(SecureStorage.anthropicAPIKey) ?? "").isEmpty)
-        return !completed && !hasKey
+        !UserDefaults.standard.bool(forKey: "Marty.hasCompletedOnboarding")
     }
 
     var body: some View {
