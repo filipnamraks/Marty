@@ -1,255 +1,133 @@
 import SwiftUI
 
-/// Intake screen — the "Before" state from the Ledger mockup. Two cards:
-/// paste your agenda, or fetch it via a local source (calendar / notion / drive).
+/// The "Before" state — a blank white sheet on the dark desk. The sheet itself
+/// is the agenda paste area; fetching from a meeting happens through ⌘K.
 struct AgendaInputView: View {
     var onAgendaReady: (Agenda) -> Void
-    var onCancel: (() -> Void)? = nil
-    var calendar: CalendarStore
+    var onOpenPalette: () -> Void
 
     @State private var pasteText: String = ""
-    @State private var fetchInstruction: String = ""
-    @State private var fetchState: FetchState = .idle
-
-    enum FetchState: Equatable {
-        case idle
-        case loading
-        case error(String)
-    }
+    @FocusState private var editing: Bool
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 28) {
-                header
-                HStack(alignment: .top, spacing: 18) {
-                    pasteCard
-                    fetchCard
-                }
+        VStack(spacing: 0) {
+            ContextBar(breadcrumb: ["Meetings", "Untitled"]) {
+                CommandKChip(label: "fetch agenda", action: onOpenPalette)
             }
-            .padding(.horizontal, 56)
-            .padding(.vertical, 36)
-            .frame(maxWidth: 1000, alignment: .leading)
-            .frame(maxWidth: .infinity)
-        }
-        .background(Theme.paper)
-        .overlay(alignment: .topLeading) {
-            if let onCancel { backButton(onCancel) }
+            DeskBackground {
+                Sheet { sheetBody }
+            }
         }
     }
 
-    private func backButton(_ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 6) {
-                Text("←")
-                Text("Back")
-            }
-            .font(.ui(12, weight: .medium))
-            .foregroundStyle(Theme.inkSoft)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(Capsule().fill(Color.white))
-            .overlay(Capsule().stroke(Theme.stroke, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 12)
-        .padding(.leading, 12)
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Before — bring in the agenda")
-                .font(.mono(11, weight: .medium))
-                .tracking(1.5)
+    private var sheetBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Untitled meeting")
+                .font(.serif(29, italic: false))
+                .fontWeight(.semibold)
                 .foregroundStyle(Theme.inkMuted)
-            Text("The agenda is the artifact.")
-                .font(.serif(36))
-                .foregroundStyle(Theme.ink)
-            Text("Drop it in or fetch it from your calendar. Headlines and subheadlines become the document Marty fills in as you talk.")
-                .font(.bodySerif(15))
-                .foregroundStyle(Theme.inkSoft)
-                .frame(maxWidth: 720, alignment: .leading)
-        }
-    }
+            Text("Paste an agenda below, or press ⌘K to pull one from a meeting")
+                .font(.mono(12.5))
+                .foregroundStyle(Theme.inkMuted)
+                .padding(.top, 7)
 
-    private var pasteCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Paste it in")
-                .font(.serif(22))
-                .foregroundStyle(Theme.ink)
-            Text("Drop in the agenda from anywhere. Marty reads headlines and subheadlines and builds the document shell.")
-                .font(.bodySerif(13))
-                .foregroundStyle(Theme.inkSoft)
+            Rectangle().fill(Theme.stroke).frame(height: 1).padding(.top, 16).padding(.bottom, 6)
 
-            ZStack(alignment: .topLeading) {
-                if pasteText.isEmpty {
-                    Text(samplePlaceholder)
-                        .font(.bodySerif(13.5))
-                        .foregroundStyle(Theme.inkMuted)
-                        .padding(14)
-                        .allowsHitTesting(false)
-                }
-                TextEditor(text: $pasteText)
-                    .font(.bodySerif(13.5))
-                    .foregroundStyle(Theme.ink)
-                    .scrollContentBackground(.hidden)
-                    .padding(8)
-                    .frame(minHeight: 200)
-            }
-            .background(Theme.paper)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .strokeBorder(Theme.strokeBold, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-            )
+            editor
+                .frame(minHeight: 220, alignment: .topLeading)
 
-            HStack {
+            hintBar.padding(.top, 22)
+
+            HStack(spacing: 8) {
                 Spacer()
-                Button(action: submitPaste) {
-                    Text("Build agenda →")
-                        .font(.ui(13, weight: .medium))
-                        .foregroundStyle(Theme.paper)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 9)
-                        .background(Capsule().fill(Theme.ink))
+                Button(action: { pasteText = ""; editing = true }) {
+                    Text("Clear").pageButton(filled: false)
                 }
                 .buttonStyle(.plain)
-                .disabled(pasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .opacity(pasteText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.4 : 1)
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Theme.strokeBold, lineWidth: 1.5)
-        )
-    }
+                .disabled(pasteText.isEmpty)
+                .opacity(pasteText.isEmpty ? 0.4 : 1)
 
-    private var fetchCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Or fetch it")
-                .font(.serif(22))
-                .foregroundStyle(Theme.ink)
-            Text("Give one line. A local source pulls the real agenda from your calendar, notes, or docs.")
-                .font(.bodySerif(13))
-                .foregroundStyle(Theme.inkSoft)
-
-            VStack(alignment: .leading, spacing: 10) {
-                TextField("> \"the weekly product sync, today at 10\"",
-                          text: $fetchInstruction)
-                    .textFieldStyle(.plain)
-                    .font(.mono(12))
-                    .foregroundStyle(Theme.inkSoft)
-
-                HStack(spacing: 8) {
-                    sourceTag("calendar")
-                    sourceTag("notion")
-                    sourceTag("drive")
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.sidebar)
-            .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Theme.stroke, lineWidth: 1)
-            )
-
-            fetchStatus
-
-            HStack {
-                Spacer()
-                Button(action: submitFetch) {
-                    Text(fetchState == .loading ? "Fetching…" : "Fetch →")
-                        .font(.ui(13, weight: .medium))
-                        .foregroundStyle(Theme.ink)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 9)
-                        .background(
-                            Capsule()
-                                .fill(Color.white)
-                                .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                        )
+                Button(action: build) {
+                    Text("Build agenda").pageButton(filled: true)
                 }
                 .buttonStyle(.plain)
-                .disabled(disableFetch)
-                .opacity(disableFetch ? 0.4 : 1)
+                .disabled(trimmed.isEmpty)
+                .opacity(trimmed.isEmpty ? 0.5 : 1)
             }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.white)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Theme.strokeBold, lineWidth: 1.5)
-        )
-    }
-
-    private func sourceTag(_ name: String) -> some View {
-        Text(name)
-            .font(.mono(10))
-            .foregroundStyle(Theme.inkMuted)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 2)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(Color(red: 0xEE/255, green: 0xF0/255, blue: 0xEA/255))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .stroke(Theme.stroke, lineWidth: 1)
-            )
-    }
-
-    private func submitPaste() {
-        let agenda = AgendaParser.parse(markdown: pasteText)
-        onAgendaReady(agenda)
-    }
-
-    private var disableFetch: Bool {
-        fetchState == .loading ||
-            fetchInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    @ViewBuilder
-    private var fetchStatus: some View {
-        switch fetchState {
-        case .idle:
-            EmptyView()
-        case .loading:
-            Text("Looking across calendar & Notion…")
-                .font(.mono(10))
-                .foregroundStyle(Theme.inkMuted)
-        case .error(let msg):
-            Text(msg)
-                .font(.mono(10))
-                .foregroundStyle(Theme.recordText)
-                .fixedSize(horizontal: false, vertical: true)
+            .padding(.top, 24)
         }
     }
 
-    private func submitFetch() {
-        let intent = fetchInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !intent.isEmpty else { return }
-        fetchState = .loading
-        Task {
-            let resolver = AgendaResolver.standard(calendar: calendar)
-            do {
-                let agenda = try await resolver.resolve(intent: intent)
-                fetchState = .idle
-                onAgendaReady(agenda)
-            } catch {
-                fetchState = .error(error.localizedDescription)
+    private var editor: some View {
+        ZStack(alignment: .topLeading) {
+            if pasteText.isEmpty {
+                (Text(samplePlaceholder) + Text(verbatim: ""))
+                    .font(.bodySerif(14.5))
+                    .foregroundStyle(Theme.inkMuted.opacity(0.7))
+                    .padding(.top, 2)
+                    .allowsHitTesting(false)
             }
+            TextEditor(text: $pasteText)
+                .font(.bodySerif(14.5))
+                .foregroundStyle(Color(hex: 0x33353C))
+                .scrollContentBackground(.hidden)
+                .tint(Theme.accent)
+                .focused($editing)
+                .frame(minHeight: 220)
         }
+    }
+
+    private var hintBar: some View {
+        HStack(spacing: 10) {
+            hint(icon: nil, "Paste plain text — Marty parses the headings into sections")
+            hint(icon: "⌘K", "fetch from a meeting")
+        }
+    }
+
+    private func hint(icon: String?, _ text: String) -> some View {
+        HStack(spacing: 8) {
+            if let icon {
+                Text(icon).font(.mono(10.5)).foregroundStyle(Theme.inkSoft)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .overlay(RoundedRectangle(cornerRadius: 4).stroke(Theme.stroke, lineWidth: 1))
+            }
+            Text(text).font(.ui(12.5)).foregroundStyle(Theme.inkSoft)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(hex: 0xFCFCFD)))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1))
+    }
+
+    private var trimmed: String { pasteText.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    private func build() {
+        guard !trimmed.isEmpty else { return }
+        onAgendaReady(AgendaParser.parse(markdown: pasteText))
     }
 
     private let samplePlaceholder = """
         Weekly Product Sync
-        1. Last week's metrics — activation, retention, funnel
+        1. Last week's metrics
         2. Onboarding redesign
         3. Pricing experiment
         4. Support backlog
         5. Next steps & owners
         """
+}
+
+private extension Text {
+    /// A filled (indigo) or ghost page button label.
+    func pageButton(filled: Bool) -> some View {
+        self.font(.ui(13, weight: .semibold))
+            .foregroundStyle(filled ? Color.white : Theme.ink)
+            .padding(.horizontal, 16).padding(.vertical, 9)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(filled ? Theme.accent : Color.white)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(filled ? Color.clear : Theme.stroke, lineWidth: 1)
+            )
+    }
 }
