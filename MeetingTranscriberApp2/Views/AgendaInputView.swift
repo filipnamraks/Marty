@@ -4,7 +4,7 @@ import SwiftUI
 /// paste your agenda, or fetch it via a local source (calendar / notion / drive).
 struct AgendaInputView: View {
     var onAgendaReady: (Agenda) -> Void
-    var onCancel: () -> Void
+    var onCancel: (() -> Void)? = nil
     var calendar: CalendarStore
 
     @State private var pasteText: String = ""
@@ -32,11 +32,13 @@ struct AgendaInputView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Theme.paper)
-        .overlay(alignment: .topLeading) { backButton }
+        .overlay(alignment: .topLeading) {
+            if let onCancel { backButton(onCancel) }
+        }
     }
 
-    private var backButton: some View {
-        Button(action: onCancel) {
+    private func backButton(_ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 6) {
                 Text("←")
                 Text("Back")
