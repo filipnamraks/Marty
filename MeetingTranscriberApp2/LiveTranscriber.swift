@@ -47,10 +47,6 @@ final class LiveTranscriber {
     var agendaFillState: SummaryState = .idle
     private var agendaFiller: AgendaFiller?
 
-    /// Fired once when a recording begins (state transitions idle → loading).
-    /// Used by LiveAssistant to clear its per-meeting conversation memory.
-    var onRecordingStart: (() -> Void)?
-
     var speakerCount: Int {
         Set(lines.map(\.speaker)).count
     }
@@ -92,7 +88,6 @@ final class LiveTranscriber {
         state = .loading
         statusMessage = "Loading WhisperKit…"
         appendEvent(.info, detail: "loading model")
-        onRecordingStart?()
 
         Task {
             do {
