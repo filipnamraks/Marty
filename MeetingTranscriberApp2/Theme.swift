@@ -36,15 +36,19 @@ enum Theme {
     static let recordText  = Color(red: 0xB9/255, green: 0x4C/255, blue: 0x38/255)
 }
 
+// Font names below are the PostScript names of the static .ttf files bundled in
+// Fonts/ (registered via INFOPLIST_KEY_ATSApplicationFontsPath = Fonts). They were
+// verified with `fc-scan --format %{postscriptname}`. SwiftUI's Font.custom matches
+// by PostScript name, so these must stay in sync with the bundled files.
 extension Font {
     // Editorial serif — Instrument Serif for headlines
     static func serif(_ size: CGFloat, italic: Bool = false) -> Font {
-        .custom(italic ? "Instrument Serif Italic" : "Instrument Serif", size: size)
+        .custom(italic ? "InstrumentSerif-Italic" : "InstrumentSerif-Regular", size: size)
     }
 
-    // Body prose — Newsreader (used italic in mockup for editorial copy)
+    // Body prose — Newsreader 16pt optical size (used italic in mockup for editorial copy)
     static func bodySerif(_ size: CGFloat, italic: Bool = false) -> Font {
-        .custom(italic ? "Newsreader Italic" : "Newsreader", size: size)
+        .custom(italic ? "Newsreader16pt-Italic" : "Newsreader16pt-Regular", size: size)
     }
 
     // UI sans — Inter

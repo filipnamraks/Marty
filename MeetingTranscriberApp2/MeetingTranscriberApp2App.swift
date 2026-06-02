@@ -10,10 +10,22 @@ struct MeetingTranscriberApp2App: App {
         }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 1180, height: 760)
+        .commands {
+            CommandGroup(after: .toolbar) {
+                Button("Run Demo Session") {
+                    NotificationCenter.default.post(name: .martyRunDemo, object: nil)
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+            }
+        }
     }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        FontRegistrar.registerBundledFonts()
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
