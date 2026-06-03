@@ -32,43 +32,28 @@ struct EditableText: View {
 
     @ViewBuilder
     private var editor: some View {
+        // No box, no outline — just an inline caret, like editing in a word doc.
         if multiline {
-            VStack(alignment: .trailing, spacing: 6) {
-                TextEditor(text: $buffer)
-                    .font(font)
-                    .foregroundStyle(color)
-                    .scrollContentBackground(.hidden)
-                    .tint(Theme.accent)
-                    .focused($focused)
-                    .frame(minHeight: 90)
-                    .padding(8)
-                    .background(fieldBackground)
-                Button(action: commit) {
-                    Text("Done").font(.ui(11, weight: .semibold)).foregroundStyle(Theme.accent)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: .command)
-            }
-            .onChange(of: focused) { _, f in if !f { commit() } }
+            TextEditor(text: $buffer)
+                .font(font)
+                .foregroundStyle(color)
+                .scrollContentBackground(.hidden)
+                .tint(Theme.ink)
+                .focused($focused)
+                .frame(minHeight: 54)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: focused) { _, f in if !f { commit() } }
         } else {
             TextField("", text: $buffer)
                 .textFieldStyle(.plain)
                 .font(font)
                 .foregroundStyle(color)
-                .tint(Theme.accent)
+                .tint(Theme.ink)
                 .focused($focused)
                 .onSubmit(commit)
-                .padding(.vertical, 3)
-                .padding(.horizontal, 6)
-                .background(fieldBackground)
                 .onChange(of: focused) { _, f in if !f { commit() } }
         }
-    }
-
-    private var fieldBackground: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(Theme.sidebar)
-            .overlay(RoundedRectangle(cornerRadius: 6).stroke(Theme.accent.opacity(0.5), lineWidth: 1.5))
     }
 
     private func beginEditing() {
