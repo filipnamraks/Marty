@@ -19,6 +19,8 @@ struct AgendaSection: Codable, Equatable, Identifiable {
     var filledAt: Date?
     var isDraft: Bool
     var status: Status
+    /// Set when the user hand-edits this section, so live fills won't clobber it.
+    var userEdited: Bool
 
     enum Status: String, Codable {
         case upcoming
@@ -38,7 +40,8 @@ struct AgendaSection: Codable, Equatable, Identifiable {
         filledContent: String = "",
         filledAt: Date? = nil,
         isDraft: Bool = false,
-        status: Status = .upcoming
+        status: Status = .upcoming,
+        userEdited: Bool = false
     ) {
         self.id = id
         self.heading = heading
@@ -49,5 +52,21 @@ struct AgendaSection: Codable, Equatable, Identifiable {
         self.filledAt = filledAt
         self.isDraft = isDraft
         self.status = status
+        self.userEdited = userEdited
+    }
+
+    // Tolerant decoding so older saved agendas (without `userEdited`) still load.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        heading = try c.decode(String.self, forKey: .heading)
+        subheading = try c.decodeIfPresent(String.self, forKey: .subheading)
+        level = try c.decode(Int.self, forKey: .level)
+        originalBullets = try c.decode([String].self, forKey: .originalBullets)
+        filledContent = try c.decode(String.self, forKey: .filledContent)
+        filledAt = try c.decodeIfPresent(Date.self, forKey: .filledAt)
+        isDraft = try c.decode(Bool.self, forKey: .isDraft)
+        status = try c.decode(Status.self, forKey: .status)
+        userEdited = try c.decodeIfPresent(Bool.self, forKey: .userEdited) ?? false
     }
 }

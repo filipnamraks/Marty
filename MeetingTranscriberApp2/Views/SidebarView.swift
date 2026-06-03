@@ -4,7 +4,7 @@ import SwiftUI
 /// list, and a profile foot. No decorative dead links.
 struct SidebarView: View {
     @Bindable var transcriber: LiveTranscriber
-    @Binding var sessions: [SessionSummary]
+    @Binding var meetings: [SavedMeeting]
     @Binding var page: Page
     var onOpenSettings: () -> Void
     var onRequestRecording: () -> Void
@@ -17,7 +17,7 @@ struct SidebarView: View {
     private var isLive: Bool { if case .live = page { return true } else { return false } }
     private var isLibrary: Bool { if case .library = page { return true } else { return false } }
     private var isRunning: Bool { transcriber.state == .running || transcriber.state == .loading }
-    private var activePastID: URL? { if case .past(let s) = page { return s.id } else { return nil } }
+    private var activeSavedId: String? { if case .saved(let id) = page { return id } else { return nil } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -31,7 +31,7 @@ struct SidebarView: View {
                 if isRunning { page = .live } else { onRequestRecording() }
             }
             navRow(label: "Library", system: "square.grid.2x2", isActive: isLibrary,
-                   trailing: { count(sessions.count) }) { page = .library }
+                   trailing: { count(meetings.count) }) { page = .library }
 
             recentSection
 
@@ -81,8 +81,8 @@ struct SidebarView: View {
                 .padding(.top, 16)
                 .padding(.bottom, 5)
 
-            if sessions.isEmpty && !isRunning {
-                Text("No sessions yet")
+            if meetings.isEmpty && !isRunning {
+                Text("No saved meetings")
                     .font(.ui(12))
                     .foregroundStyle(Theme.D.mut)
                     .padding(.horizontal, 9)
@@ -94,9 +94,9 @@ struct SidebarView: View {
                               elapsed: formatElapsed(transcriber.elapsedSeconds),
                               isActive: isLive) { page = .live }
                 }
-                ForEach(sessions.prefix(isRunning ? 5 : 6)) { session in
-                    recentRow(title: session.title, isLive: false, elapsed: nil,
-                              isActive: activePastID == session.id) { page = .past(session) }
+                ForEach(meetings.prefix(isRunning ? 5 : 6)) { meeting in
+                    recentRow(title: meeting.title, isLive: false, elapsed: nil,
+                              isActive: activeSavedId == meeting.id) { page = .saved(meeting.id) }
                 }
             }
         }

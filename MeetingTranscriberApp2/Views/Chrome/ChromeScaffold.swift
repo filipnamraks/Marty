@@ -43,6 +43,24 @@ struct Sheet<Content: View>: View {
     }
 }
 
+// MARK: - Page surface
+
+/// A white "page" that fills the available desk area (with margins applied by the
+/// caller). Use for tab content that scrolls internally (transcript / summary)
+/// where the content-sized `Sheet` doesn't fit.
+struct PageSurface<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .background(Theme.paper)
+            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .shadow(color: .black.opacity(0.40), radius: 40, y: 18)
+            .shadow(color: .black.opacity(0.24), radius: 12, y: 5)
+    }
+}
+
 // MARK: - Context bar
 
 /// The slim dark top bar: a breadcrumb on the left, caller-supplied controls

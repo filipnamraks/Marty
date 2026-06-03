@@ -5,4 +5,5 @@ enum Page: Hashable {
     case live
     case library
     case past(SessionSummary)
+    case saved(String)   // SavedMeeting id
 }

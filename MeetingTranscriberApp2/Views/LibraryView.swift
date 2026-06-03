@@ -1,320 +1,190 @@
 import SwiftUI
-import AppKit
 
+/// The library — saved meetings shown as Google-Drive-style document cards:
+/// a preview, the meeting headline, and the date, newest first.
 struct LibraryView: View {
-    @Binding var sessions: [SessionSummary]
+    @Binding var meetings: [SavedMeeting]
     @Binding var page: Page
+    var onDelete: (SavedMeeting) -> Void
 
     @State private var search: String = ""
-    @State private var renaming: SessionSummary? = nil
-    @State private var pendingDelete: SessionSummary? = nil
+    @State private var pendingDelete: SavedMeeting? = nil
 
-    private var filtered: [SessionSummary] {
-        guard !search.isEmpty else { return sessions }
-        return sessions.filter { $0.title.localizedCaseInsensitiveContains(search) }
+    private let columns = [GridItem(.adaptive(minimum: 230, maximum: 320), spacing: 18)]
+
+    private var filtered: [SavedMeeting] {
+        guard !search.isEmpty else { return meetings }
+        return meetings.filter { $0.title.localizedCaseInsensitiveContains(search) }
     }
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                masthead
-                searchBar
-                ForEach(groupedByBucket, id: \.0) { (bucket, items) in
-                    bucketSection(label: bucket, items: items)
-                }
+            VStack(alignment: .leading, spacing: 20) {
+                header
                 if filtered.isEmpty {
                     emptyState
+                } else {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+                        ForEach(filtered) { meeting in
+                            MeetingCard(meeting: meeting,
+                                        onOpen: { page = .saved(meeting.id) },
+                                        onDelete: { pendingDelete = meeting })
+                        }
+                    }
                 }
             }
-            .padding(.horizontal, 36)
-            .padding(.top, 32)
-            .padding(.bottom, 36)
+            .padding(28)
         }
-        .background(Theme.paper)
-        .sheet(item: $renaming) { session in
-            RenameSheet(session: session, onSave: { newTitle in
-                SessionTitleStore.setCustomTitle(newTitle, for: session.id)
-                refresh()
-            })
-        }
+        .background(Theme.D.deskGlow)
         .alert("Move to Trash?",
                isPresented: Binding(get: { pendingDelete != nil },
                                     set: { if !$0 { pendingDelete = nil } })) {
             Button("Cancel", role: .cancel) { pendingDelete = nil }
             Button("Move to Trash", role: .destructive) {
-                if let s = pendingDelete {
-                    SessionsScanner.delete(s)
-                    pendingDelete = nil
-                    refresh()
-                }
+                if let m = pendingDelete { onDelete(m); pendingDelete = nil }
             }
         } message: {
-            if let s = pendingDelete {
-                Text("\"\(s.title)\" will be moved to the Trash. You can restore it from Finder.")
+            if let m = pendingDelete {
+                Text("\"\(m.title)\" will be moved to the Trash.")
             }
         }
     }
 
-    // MARK: Masthead
-    private var masthead: some View {
+    private var header: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 12) {
-                Text(eyebrowText.uppercased())
-                    .font(.mono(10.5))
-                    .tracking(1.8)
-                    .foregroundStyle(Theme.inkMuted)
-                Rectangle().fill(Theme.strokeBold).frame(height: 1)
+            Text("Library")
+                .font(.serif(30).weight(.semibold))
+                .foregroundStyle(Theme.D.text)
+            Text("Every meeting you've saved — agenda, transcript, and summary.")
+                .font(.ui(13))
+                .foregroundStyle(Theme.D.sub)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).foregroundStyle(Theme.D.mut)
+                TextField("", text: $search,
+                          prompt: Text("Search meetings").foregroundStyle(Theme.D.mut))
+                    .textFieldStyle(.plain).font(.ui(13)).foregroundStyle(Theme.D.text)
+                    .tint(Theme.D.accent)
             }
-            (Text("Your ").font(.serif(44)) +
-             Text("library").font(.serif(44, italic: true)).foregroundStyle(Theme.accentDeep) +
-             Text(".").font(.serif(44)))
-                .foregroundStyle(Theme.ink)
-            Text("Every meeting Marty has captured, grouped by when it happened.")
-                .font(.bodySerif(16, italic: true))
-                .foregroundStyle(Theme.inkSoft)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(RoundedRectangle(cornerRadius: 9).fill(Theme.D.kkBg))
+            .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.D.line, lineWidth: 1))
+            .frame(maxWidth: 360)
+            .environment(\.colorScheme, .dark)
         }
-    }
-
-    private var eyebrowText: String {
-        let f = DateFormatter()
-        f.dateFormat = "EEEE, d MMMM yyyy"
-        return "\(f.string(from: Date())) · \(sessions.count) sessions"
-    }
-
-    // MARK: Search
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 12))
-                .foregroundStyle(Theme.inkMuted)
-            TextField("Search by title…", text: $search)
-                .textFieldStyle(.plain)
-                .font(.ui(12.5))
-                .foregroundStyle(Theme.ink)
-            if !search.isEmpty {
-                Button(action: { search = "" }) {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Theme.inkMuted)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(Theme.sidebar)
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .frame(maxWidth: 420, alignment: .leading)
-    }
-
-    // MARK: Buckets
-    private var groupedByBucket: [(String, [SessionSummary])] {
-        let calendar = Calendar.current
-        let now = Date()
-        let startToday = calendar.startOfDay(for: now)
-        let startYesterday = calendar.date(byAdding: .day, value: -1, to: startToday)!
-        let startWeek = calendar.date(byAdding: .day, value: -7, to: startToday)!
-        let startMonth = calendar.date(byAdding: .day, value: -30, to: startToday)!
-
-        var today: [SessionSummary] = []
-        var yesterday: [SessionSummary] = []
-        var week: [SessionSummary] = []
-        var month: [SessionSummary] = []
-        var earlier: [SessionSummary] = []
-
-        for s in filtered {
-            if s.date >= startToday { today.append(s) }
-            else if s.date >= startYesterday { yesterday.append(s) }
-            else if s.date >= startWeek { week.append(s) }
-            else if s.date >= startMonth { month.append(s) }
-            else { earlier.append(s) }
-        }
-
-        return [
-            ("Today", today),
-            ("Yesterday", yesterday),
-            ("This week", week),
-            ("This month", month),
-            ("Earlier", earlier),
-        ].filter { !$0.1.isEmpty }
-    }
-
-    @ViewBuilder
-    private func bucketSection(label: String, items: [SessionSummary]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text(label.uppercased())
-                    .font(.mono(10))
-                    .tracking(1.8)
-                    .foregroundStyle(Theme.inkMuted)
-                Spacer()
-                Text("\(items.count)")
-                    .font(.mono(10))
-                    .foregroundStyle(Theme.inkMuted)
-            }
-            .padding(.bottom, 8)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Theme.stroke).frame(height: 1.5)
-            }
-            .padding(.bottom, 6)
-
-            ForEach(items) { session in
-                LibraryRow(session: session,
-                           onOpen: { page = .past(session) },
-                           onRename: { renaming = session },
-                           onDelete: { pendingDelete = session })
-            }
-        }
+        .padding(.bottom, 4)
     }
 
     private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "tray")
-                .font(.system(size: 32))
-                .foregroundStyle(Theme.inkMuted)
-            Text(search.isEmpty ? "No sessions yet." : "Nothing matches \"\(search)\".")
-                .font(.serif(20, italic: true))
-                .foregroundStyle(Theme.inkSoft)
+        VStack(alignment: .leading, spacing: 8) {
+            Text(search.isEmpty ? "Nothing saved yet" : "No matches")
+                .font(.serif(20)).foregroundStyle(Theme.D.text)
+            Text(search.isEmpty
+                 ? "Finish a meeting and press “Add to library” to keep it here."
+                 : "Try a different search.")
+                .font(.ui(13)).foregroundStyle(Theme.D.sub)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 60)
-    }
-
-    private func refresh() {
-        sessions = SessionsScanner.scan()
+        .padding(.top, 30)
     }
 }
 
-private struct LibraryRow: View {
-    let session: SessionSummary
+// MARK: - Card
+
+private struct MeetingCard: View {
+    let meeting: SavedMeeting
     var onOpen: () -> Void
-    var onRename: () -> Void
     var onDelete: () -> Void
 
     @State private var hovering = false
 
     private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "EEE d MMM · HH:mm"
-        return f
+        let f = DateFormatter(); f.dateFormat = "d MMM yyyy"; return f
     }()
 
     var body: some View {
         Button(action: onOpen) {
-            HStack(alignment: .firstTextBaseline, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(session.title)
-                        .font(.serif(18))
-                        .foregroundStyle(Theme.ink)
-                        .lineLimit(1)
-                    Text("\(Self.dateFormatter.string(from: session.date)) · \(session.lineCount) lines")
-                        .font(.mono(10.5))
-                        .foregroundStyle(Theme.inkMuted)
-                }
-                Spacer()
+            VStack(spacing: 0) {
+                preview
+                footer
+            }
+            .background(Theme.paper)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.D.line, lineWidth: 1))
+            .overlay(alignment: .topTrailing) {
                 if hovering {
-                    Button(action: onRename) {
-                        Image(systemName: "pencil")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Theme.inkSoft)
-                            .padding(6)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help("Rename")
                     Button(action: onDelete) {
                         Image(systemName: "trash")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
-                            .padding(6)
-                            .contentShape(Rectangle())
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.inkSoft)
+                            .padding(7)
+                            .background(Circle().fill(Theme.paper).shadow(color: .black.opacity(0.15), radius: 3))
                     }
                     .buttonStyle(.plain)
-                    .help("Move to Trash")
+                    .padding(8)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 14)
-            .background(hovering ? Theme.sidebar : .clear)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(Theme.stroke).frame(height: 1)
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .shadow(color: .black.opacity(0.35), radius: 14, y: 8)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { inside in hovering = inside }
+        .onHover { hovering = $0 }
         .contextMenu {
-            Button("Open") { onOpen() }
-            Button("Rename…") { onRename() }
+            Button("Open", action: onOpen)
             Divider()
-            Button("Move to Trash", role: .destructive) { onDelete() }
+            Button("Move to Trash", role: .destructive, action: onDelete)
         }
     }
-}
 
-private struct RenameSheet: View {
-    let session: SessionSummary
-    var onSave: (String?) -> Void
-
-    @Environment(\.dismiss) private var dismiss
-    @State private var title: String = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            (Text("Rename ").font(.serif(24)) +
-             Text("session").font(.serif(24, italic: true)).foregroundStyle(Theme.accentDeep) +
-             Text(".").font(.serif(24)))
+    // A small document-like preview, à la Drive thumbnails.
+    private var preview: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(meeting.title)
+                .font(.serif(15).weight(.semibold))
                 .foregroundStyle(Theme.ink)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("TITLE")
-                    .font(.mono(10))
-                    .tracking(1.6)
+                .lineLimit(2)
+            ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
+                Text(line)
+                    .font(.bodySerif(10.5))
                     .foregroundStyle(Theme.inkMuted)
-                TextField("Standup with engineering", text: $title)
-                    .textFieldStyle(.plain)
-                    .font(.ui(13))
-                    .padding(10)
-                    .background(Theme.sidebar)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .lineLimit(1)
             }
-
-            HStack {
-                Button("Reset to auto") {
-                    onSave(nil)
-                    dismiss()
-                }
-                .buttonStyle(.plain)
-                .font(.ui(12))
-                .foregroundStyle(Theme.inkSoft)
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.plain)
-                    .font(.ui(13))
-                    .foregroundStyle(Theme.inkSoft)
-                Button {
-                    onSave(title.trimmingCharacters(in: .whitespaces))
-                    dismiss()
-                } label: {
-                    Text("Save")
-                        .font(.ui(13, weight: .medium))
-                        .foregroundStyle(Color.white)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 7)
-                        .background(Theme.ink)
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
+            Spacer(minLength: 0)
         }
-        .padding(24)
-        .frame(width: 460)
-        .background(Theme.paper)
-        .tint(Theme.ink)
-        .onAppear { title = session.title }
+        .frame(height: 150, alignment: .topLeading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(Color.white)
+        .clipped()
+        .overlay(Rectangle().fill(Theme.stroke).frame(height: 1), alignment: .bottom)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 10) {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Theme.accent)
+                .frame(width: 22, height: 22)
+                .overlay(Image(systemName: "doc.text.fill").font(.system(size: 11)).foregroundStyle(.white))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(meeting.title)
+                    .font(.ui(12.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+                Text(Self.dateFormatter.string(from: meeting.date))
+                    .font(.mono(10)).foregroundStyle(Theme.inkMuted)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 11)
+    }
+
+    private var previewLines: [String] {
+        if let agenda = meeting.agenda, !agenda.sections.isEmpty {
+            return agenda.sections.prefix(6).map { "• \($0.heading)" }
+        }
+        if let summary = meeting.summary {
+            if !summary.summary.isEmpty { return [summary.summary] }
+            if !summary.keyPoints.isEmpty { return summary.keyPoints.prefix(6).map { "• \($0)" } }
+        }
+        if let lines = meeting.transcript, !lines.isEmpty {
+            return lines.prefix(6).map { "\($0.speaker): \($0.text)" }
+        }
+        return [meeting.partsLabel]
     }
 }
