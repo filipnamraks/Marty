@@ -1,50 +1,102 @@
 import SwiftUI
 
-/// The document flow — a white sheet on the dark desk that fills section by
-/// section as you talk, then settles into refined notes. A dark context bar
-/// carries the recording pill (or Copy/Export); a slim dock shows the live feed.
+/// The document flow — a white page on the dark desk with three Chrome-style
+/// tabs (Meeting Agenda / Transcript / Summary). The agenda fills as you talk,
+/// and every piece is click-to-edit. When refined you can add it to the library.
 struct AgendaDocumentView: View {
     @Bindable var transcriber: LiveTranscriber
     var onFinish: () -> Void
     var onExport: () -> Void = {}
+    var onAddToLibrary: () -> Void = {}
+
+    @State private var tab: DocTab = .agenda
+
+    enum DocTab: String, CaseIterable, Identifiable {
+        case agenda = "Meeting Agenda"
+        case transcript = "Transcript"
+        case summary = "Summary"
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .agenda: return "doc.text"
+            case .transcript: return "text.quote"
+            case .summary: return "sparkles"
+            }
+        }
+    }
 
     private var isRecording: Bool { transcriber.state == .running || transcriber.state == .loading }
     private var isRefined: Bool { transcriber.state == .idle && transcriber.agendaFillState == .ready }
 
     var body: some View {
         VStack(spacing: 0) {
-            contextBar
-            DeskBackground {
-                Sheet { document }
+            topBar
+            ZStack {
+                Theme.D.deskGlow
+                page
+                    .padding(.horizontal, 24)
+                    .padding(.top, 18)
+                    .padding(.bottom, isRecording && tab == .agenda ? 0 : 24)
             }
-            if isRecording {
+            if isRecording && tab == .agenda {
                 TranscriptDock(line: transcriber.lines.last, feedingSection: writingNumber)
             }
         }
     }
 
-    // MARK: - Context bar
+    // MARK: - Top bar (Chrome tabs + actions)
+
+    private var topBar: some View {
+        HStack(alignment: .bottom, spacing: 0) {
+            HStack(spacing: 4) {
+                ForEach(DocTab.allCases) { t in
+                    chromeTab(t)
+                }
+            }
+            Spacer(minLength: 12)
+            actions.padding(.bottom, 7)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .frame(height: 50)
+        .background(Theme.D.panel)
+        .overlay(Rectangle().fill(Theme.D.line).frame(height: 1), alignment: .bottom)
+    }
+
+    private func chromeTab(_ t: DocTab) -> some View {
+        let on = tab == t
+        return Button(action: { tab = t }) {
+            HStack(spacing: 7) {
+                Image(systemName: t.icon).font(.system(size: 11))
+                Text(t.rawValue).font(.ui(12.5, weight: on ? .semibold : .regular))
+            }
+            .foregroundStyle(on ? Theme.ink : Theme.D.sub)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .background(
+                UnevenRoundedRectangle(topLeadingRadius: 8, topTrailingRadius: 8)
+                    .fill(on ? Theme.paper : Color.clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 
     @ViewBuilder
-    private var contextBar: some View {
+    private var actions: some View {
         if isRecording {
-            ContextBar(breadcrumb: ["Meetings", agendaTitle]) {
-                HStack(spacing: 10) {
-                    RecordingPill(elapsed: formatElapsed(transcriber.elapsedSeconds))
-                    barButton("Finish & refine", filled: false, action: onFinish)
-                }
+            HStack(spacing: 10) {
+                RecordingPill(elapsed: formatElapsed(transcriber.elapsedSeconds))
+                barButton("Finish & refine", filled: false, action: onFinish)
             }
         } else if isRefined {
-            ContextBar(breadcrumb: ["Library", "\(agendaTitle) — Notes"]) {
-                HStack(spacing: 8) {
-                    barButton("Copy", filled: false, action: copyAgenda)
-                    barButton("Export", filled: true, action: onExport)
-                }
+            HStack(spacing: 8) {
+                barButton("Copy", filled: false, action: copyAgenda)
+                barButton("Add to library", filled: true, action: onAddToLibrary)
+                barButton("Export", filled: false, action: onExport)
             }
         } else {
-            ContextBar(breadcrumb: ["Meetings", agendaTitle]) {
-                Text("Refining…").font(.mono(11)).foregroundStyle(Theme.D.sub)
-            }
+            Text("Refining…").font(.mono(11)).foregroundStyle(Theme.D.sub)
         }
     }
 
@@ -62,13 +114,39 @@ struct AgendaDocumentView: View {
         .buttonStyle(.plain)
     }
 
-    // MARK: - Document (sheet)
+    // MARK: - Page content per tab
+
+    @ViewBuilder
+    private var page: some View {
+        switch tab {
+        case .agenda:
+            PageSurface {
+                ScrollView {
+                    document
+                        .frame(maxWidth: 820, alignment: .leading)
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 56)
+                        .padding(.vertical, 44)
+                }
+            }
+        case .transcript:
+            PageSurface { TranscriptView(transcriber: transcriber, pastSession: nil) }
+        case .summary:
+            PageSurface { SummaryView(transcriber: transcriber) }
+        }
+    }
+
+    // MARK: - Editable agenda document
 
     private var document: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text(agendaTitle)
-                .font(.serif(29)).fontWeight(.bold)
-                .foregroundStyle(Theme.ink)
+            EditableText(
+                text: agendaTitle,
+                placeholder: "Untitled meeting",
+                font: .serif(29).weight(.bold),
+                color: Theme.ink,
+                onCommit: { transcriber.agenda?.title = $0 }
+            )
             Text(metaLine)
                 .font(.mono(12.5)).foregroundStyle(Theme.inkMuted)
                 .padding(.top, 7)
@@ -80,10 +158,35 @@ struct AgendaDocumentView: View {
 
             if let agenda = transcriber.agenda {
                 ForEach(Array(agenda.sections.enumerated()), id: \.element.id) { idx, section in
-                    SectionRow(section: section, number: idx + 1)
+                    SectionRow(
+                        section: section,
+                        number: idx + 1,
+                        onEditHeading: updateSection(section.id) { $0.heading = $1; $0.userEdited = true },
+                        onEditSubheading: updateSection(section.id) { $0.subheading = $1.isEmpty ? nil : $1; $0.userEdited = true },
+                        onEditBody: updateSection(section.id) { sec, text in
+                            sec.filledContent = text
+                            sec.userEdited = true
+                            if !text.isEmpty, sec.status == .upcoming || sec.status == .notCovered {
+                                sec.status = isRefined ? .refined : .filled
+                            }
+                        }
+                    )
                 }
             }
         }
+    }
+
+    /// Mutate one section by id and write the agenda back (triggers a refresh).
+    private func updateSection(_ id: UUID, _ mutate: (inout AgendaSection, String) -> Void, value: String) {
+        guard var agenda = transcriber.agenda,
+              let idx = agenda.sections.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&agenda.sections[idx], value)
+        transcriber.agenda = agenda
+    }
+
+    /// Curried helper so call sites read `updateSection(id) { section, newText in … }`.
+    private func updateSection(_ id: UUID, _ mutate: @escaping (inout AgendaSection, String) -> Void) -> (String) -> Void {
+        { value in self.updateSection(id, mutate, value: value) }
     }
 
     // MARK: - Derived
@@ -127,18 +230,26 @@ struct AgendaDocumentView: View {
 
     private func copyAgenda() {
         guard let agenda = transcriber.agenda else { return }
-        var out = "# \(agenda.title)\n\n"
-        for s in agenda.sections {
-            out += "## \(s.heading)\n"
-            if let sub = s.subheading { out += "*\(sub)*\n\n" }
-            if !s.filledContent.isEmpty { out += s.filledContent + "\n\n" }
-        }
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(out, forType: .string)
+        NSPasteboard.general.setString(AgendaMarkdown.render(agenda), forType: .string)
     }
 
     private func formatElapsed(_ seconds: Int) -> String {
         String(format: "%02d:%02d", seconds / 60, seconds % 60)
+    }
+}
+
+// MARK: - Agenda markdown rendering (shared by Copy + library save)
+
+enum AgendaMarkdown {
+    static func render(_ agenda: Agenda) -> String {
+        var out = "# \(agenda.title)\n\n"
+        for s in agenda.sections {
+            out += "## \(s.heading)\n"
+            if let sub = s.subheading, !sub.isEmpty { out += "*\(sub)*\n\n" }
+            if !s.filledContent.isEmpty { out += s.filledContent + "\n\n" }
+        }
+        return out
     }
 }
 
@@ -161,7 +272,6 @@ private struct RecordingPill: View {
 
 // MARK: - Transcript dock
 
-/// The slim dark dock that gives the live feed a home below the page.
 private struct TranscriptDock: View {
     let line: TranscriptLine?
     let feedingSection: Int?
@@ -171,7 +281,7 @@ private struct TranscriptDock: View {
             EqualizerView(barCount: 5, color: Theme.D.accent, maxHeight: 14, barWidth: 2.5)
             Group {
                 if let line {
-                    (Text(speaker(line.speaker) + " — ").foregroundStyle(Theme.D.sub)
+                    (Text(line.speaker + " — ").foregroundStyle(Theme.D.sub)
                      + Text("“\(line.text)”").italic().foregroundStyle(Color(hex: 0xCFD2D8)))
                 } else {
                     Text("Listening…").foregroundStyle(Theme.D.mut)
@@ -191,42 +301,52 @@ private struct TranscriptDock: View {
         .background(Theme.D.dockBg)
         .overlay(Rectangle().fill(Theme.D.line).frame(height: 1), alignment: .top)
     }
-
-    private func speaker(_ raw: String) -> String {
-        if raw == "You" { return UserProfile.shared.displayName == "Add your name" ? "You" : "You" }
-        if raw == "Them" { return "Them" }
-        return raw
-    }
 }
 
-// MARK: - Section row
+// MARK: - Section row (editable)
 
 private struct SectionRow: View {
     let section: AgendaSection
     let number: Int
+    var onEditHeading: (String) -> Void
+    var onEditSubheading: (String) -> Void
+    var onEditBody: (String) -> Void
 
     private var isWriting: Bool { section.status == .writing }
-    private var isUpcoming: Bool {
-        section.status == .upcoming || section.status == .notCovered
-    }
+    private var isUpcoming: Bool { section.status == .upcoming || section.status == .notCovered }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(headingText)
-                    .font(.serif(18.5)).fontWeight(.semibold)
-                    .foregroundStyle(isUpcoming ? Color(hex: 0xB9BCC4) : Theme.ink)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                if section.status != .offAgenda {
+                    Text("\(number) ·")
+                        .font(.serif(18.5).weight(.semibold))
+                        .foregroundStyle(isUpcoming ? Color(hex: 0xB9BCC4) : Theme.ink)
+                }
+                EditableText(
+                    text: section.heading,
+                    placeholder: "Section title",
+                    font: .serif(18.5).weight(.semibold),
+                    color: isUpcoming ? Color(hex: 0xB9BCC4) : Theme.ink,
+                    onCommit: onEditHeading
+                )
                 Spacer(minLength: 8)
                 StatusChip(status: section.status)
             }
-            if let sub = section.subheading {
-                Text(sub)
-                    .font(.bodySerif(13.5))
-                    .foregroundStyle(isUpcoming ? Color(hex: 0xC9CCD3) : Theme.inkSoft)
-            }
-            if !section.filledContent.isEmpty {
-                bullets
-            }
+
+            EditableText(
+                text: section.subheading ?? "",
+                placeholder: "Add a subheading…",
+                font: .bodySerif(13.5),
+                color: isUpcoming ? Color(hex: 0xC9CCD3) : Theme.inkSoft,
+                onCommit: onEditSubheading
+            )
+
+            EditableSectionBody(
+                content: section.filledContent,
+                isWriting: isWriting,
+                onCommit: onEditBody
+            )
         }
         .padding(.vertical, 20)
         .padding(.horizontal, isWriting ? 28 : 0)
@@ -241,13 +361,58 @@ private struct SectionRow: View {
         }
         .overlay(Rectangle().fill(Color(hex: 0xF1F2F4)).frame(height: 1), alignment: .bottom)
     }
+}
 
-    private var headingText: String {
-        section.status == .offAgenda ? section.heading : "\(number) · \(section.heading)"
+// MARK: - Editable section body (formatted bullets ↔ raw editor)
+
+private struct EditableSectionBody: View {
+    let content: String
+    let isWriting: Bool
+    var onCommit: (String) -> Void
+
+    @State private var editing = false
+    @State private var buffer = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        if editing {
+            VStack(alignment: .trailing, spacing: 6) {
+                TextEditor(text: $buffer)
+                    .font(.bodySerif(14.5))
+                    .foregroundStyle(Color(hex: 0x33353C))
+                    .scrollContentBackground(.hidden)
+                    .tint(Theme.accent)
+                    .focused($focused)
+                    .frame(minHeight: 90)
+                    .padding(8)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.sidebar))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.accent.opacity(0.5), lineWidth: 1.5))
+                Button(action: commit) {
+                    Text("Done").font(.ui(11, weight: .semibold)).foregroundStyle(Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.return, modifiers: .command)
+            }
+            .onChange(of: focused) { _, f in if !f { commit() } }
+            .padding(.top, 5)
+        } else if content.isEmpty {
+            Text("Click to add notes…")
+                .font(.bodySerif(14.5)).foregroundStyle(Theme.inkMuted.opacity(0.7))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture { begin() }
+                .padding(.top, 5)
+        } else {
+            bullets
+                .contentShape(Rectangle())
+                .onTapGesture { begin() }
+                .help("Click to edit")
+                .padding(.top, 5)
+        }
     }
 
     private var bullets: some View {
-        let lines = parsedBullets(section.filledContent)
+        let lines = parsedBullets(content)
         return VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -264,7 +429,19 @@ private struct SectionRow: View {
                 }
             }
         }
-        .padding(.top, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func begin() {
+        buffer = content
+        editing = true
+        focused = true
+    }
+
+    private func commit() {
+        guard editing else { return }
+        editing = false
+        onCommit(buffer.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func parsedBullets(_ raw: String) -> [String] {

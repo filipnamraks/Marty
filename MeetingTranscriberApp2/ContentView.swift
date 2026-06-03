@@ -12,6 +12,9 @@ struct ContentView: View {
     @State private var showCalendarPicker: Bool = false
     @State private var showPalette: Bool = false
     @State private var showExport: Bool = false
+    @State private var showAddToLibrary: Bool = false
+    @State private var savedMeetings: [SavedMeeting] = []
+    @State private var openedSaved: SavedMeeting? = nil
     @State private var demo: DemoSession? = nil
     @StateObject private var calendar = CalendarStore()
 
@@ -26,7 +29,7 @@ struct ContentView: View {
             Theme.D.room.ignoresSafeArea()
             HStack(spacing: 0) {
                 SidebarView(transcriber: transcriber,
-                            sessions: $sessions,
+                            meetings: $savedMeetings,
                             page: $page,
                             onOpenSettings: { showSettings = true },
                             onRequestRecording: requestRecording,
@@ -51,6 +54,7 @@ struct ContentView: View {
         .frame(minWidth: 1100, minHeight: 720)
         .onAppear {
             refreshSessions()
+            refreshLibrary()
         }
         .onReceive(NotificationCenter.default.publisher(for: .martyRunDemo)) { _ in
             runDemo()
@@ -83,12 +87,17 @@ struct ContentView: View {
                     transcriber.cleanedLines = nil
                     transcriber.cleaningState = .idle
                 }
+            case .saved(let id):
+                openSavedMeeting(id)
             case .live:
                 loadedPast = nil
+                openedSaved = nil
             case .home:
                 loadedPast = nil
+                openedSaved = nil
             case .library:
                 loadedPast = nil
+                openedSaved = nil
             }
             selectedTab = .transcript
         }
@@ -112,6 +121,11 @@ struct ContentView: View {
         }
         .sheet(isPresented: $showCalendarPicker) {
             CalendarPickerSheet(calendar: calendar)
+        }
+        .sheet(isPresented: $showAddToLibrary) {
+            AddToLibrarySheet(transcriber: transcriber, existing: openedSaved, onSaved: {
+                refreshLibrary()
+            })
         }
         .sheet(isPresented: $showExport) {
             ZStack(alignment: .topTrailing) {
@@ -138,19 +152,26 @@ struct ContentView: View {
             AgendaInputView(onAgendaReady: importAgenda,
                             onOpenPalette: { showPalette = true })
         } else if case .library = page {
-            VStack(spacing: 0) {
-                ContextBar(breadcrumb: ["Library"])
-                LibraryView(sessions: $sessions, page: $page)
-            }
+            LibraryView(meetings: $savedMeetings, page: $page, onDelete: { meeting in
+                SavedLibraryStore.delete(meeting.id)
+                refreshLibrary()
+            })
         } else if case .live = page, transcriber.agenda != nil {
-            AgendaDocumentView(
-                transcriber: transcriber,
-                onFinish: { if transcriber.state == .running { transcriber.stop() } },
-                onExport: { showExport = true }
-            )
+            documentView
+        } else if case .saved = page {
+            documentView
         } else {
             pastSessionView
         }
+    }
+
+    private var documentView: some View {
+        AgendaDocumentView(
+            transcriber: transcriber,
+            onFinish: { if transcriber.state == .running { transcriber.stop() } },
+            onExport: { showExport = true },
+            onAddToLibrary: { showAddToLibrary = true }
+        )
     }
 
     private var pastSessionView: some View {
@@ -232,6 +253,28 @@ struct ContentView: View {
 
     private func refreshSessions() {
         sessions = SessionsScanner.scan()
+    }
+
+    private func refreshLibrary() {
+        savedMeetings = SavedLibraryStore.all()
+    }
+
+    /// Load a saved meeting into the transcriber and show it in the document view.
+    private func openSavedMeeting(_ id: String) {
+        loadedPast = nil
+        guard transcriber.state == .idle, let m = SavedLibraryStore.load(id: id) else { return }
+        openedSaved = m
+        transcriber.agenda = m.agenda
+        transcriber.agendaFillState = .ready   // a saved meeting always shows its finished actions
+        if let lines = m.transcript {
+            transcriber.cleanedLines = lines.map { TranscriptLine(timestamp: $0.timestamp, speaker: $0.speaker, text: $0.text) }
+            transcriber.cleaningState = .ready
+        } else {
+            transcriber.cleanedLines = nil
+            transcriber.cleaningState = .idle
+        }
+        transcriber.summary = m.summary
+        transcriber.summaryState = m.summary != nil ? .ready : .idle
     }
 }
 

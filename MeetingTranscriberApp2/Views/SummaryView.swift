@@ -106,11 +106,7 @@ struct SummaryView: View {
     @ViewBuilder
     private func readyContent(_ s: MeetingSummary) -> some View {
         masthead(s)
-        if let narrative = s.narrative, !narrative.isEmpty {
-            narrativeSection(narrative)
-        } else if !s.summary.isEmpty {
-            narrativeSection(s.summary)
-        }
+        narrativeSection(s.narrative ?? "")
         if let topics = s.topics, !topics.isEmpty {
             topicsSection(topics)
         }
@@ -160,20 +156,32 @@ struct SummaryView: View {
                     .foregroundStyle(Theme.inkMuted)
                 Rectangle().fill(Theme.strokeBold).frame(height: 1)
             }
-            Text(s.title ?? "Untitled session")
-                .font(.serif(40))
-                .foregroundStyle(Theme.ink)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            if !s.summary.isEmpty {
-                Text(s.summary)
-                    .font(.bodySerif(17, italic: true))
-                    .foregroundStyle(Theme.inkSoft)
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: 700, alignment: .leading)
-                    .textSelection(.enabled)
-            }
+            EditableText(
+                text: s.title ?? "",
+                placeholder: "Untitled session",
+                font: .serif(40),
+                color: Theme.ink,
+                onCommit: { t in updateSummary { $0.title = t.isEmpty ? nil : t } }
+            )
+            EditableText(
+                text: s.summary,
+                placeholder: "Add a one-line summary…",
+                font: .bodySerif(17, italic: true),
+                color: Theme.inkSoft,
+                multiline: true,
+                onCommit: { new in updateSummary { $0.summary = new } }
+            )
+            .frame(maxWidth: 700, alignment: .leading)
+        }
+    }
+
+    /// Edit one field of the summary and persist it (memory + sidecar).
+    private func updateSummary(_ mutate: (inout MeetingSummary) -> Void) {
+        guard var s = transcriber.summary else { return }
+        mutate(&s)
+        transcriber.summary = s
+        if let url = transcriber.transcriptFileURL {
+            SummarySidecar.save(s, for: url)
         }
     }
 
@@ -183,16 +191,18 @@ struct SummaryView: View {
         return f.string(from: Date()).uppercased()
     }
 
-    // MARK: Narrative
+    // MARK: Narrative (editable)
     private func narrativeSection(_ text: String) -> some View {
-        Text(text)
-            .font(.bodySerif(17))
-            .foregroundStyle(Theme.ink)
-            .lineSpacing(6)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: 700, alignment: .leading)
-            .textSelection(.enabled)
-            .padding(.top, 4)
+        EditableText(
+            text: text,
+            placeholder: "Add a narrative…",
+            font: .bodySerif(17),
+            color: Theme.ink,
+            multiline: true,
+            onCommit: { new in updateSummary { $0.narrative = new.isEmpty ? nil : new } }
+        )
+        .frame(maxWidth: 700, alignment: .leading)
+        .padding(.top, 4)
     }
 
     // MARK: Topics

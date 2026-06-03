@@ -90,6 +90,7 @@ final class AgendaFiller {
         // result but not before, used by the UI to highlight "writing now".
         var writingIndex: Int? = nil
         for i in agenda.sections.indices {
+            if agenda.sections[i].userEdited { continue }
             let id = agenda.sections[i].id
             let prev = agenda.sections[i].filledContent
             let next = result.sections[id] ?? prev
@@ -100,6 +101,8 @@ final class AgendaFiller {
 
         for i in agenda.sections.indices {
             let id = agenda.sections[i].id
+            // Never overwrite a section the user has hand-edited.
+            if agenda.sections[i].userEdited { continue }
             guard let new = result.sections[id] else { continue }
             agenda.sections[i].filledContent = new
             agenda.sections[i].filledAt = Date()
