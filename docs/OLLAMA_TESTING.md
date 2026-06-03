@@ -4,6 +4,23 @@ Marty's agenda fill, summary, transcript clean-up and NL picker all run locally
 through Ollama. There's no XCTest target, so the engine contract is covered by a
 manual smoke test that hits a running Ollama exactly the way `OllamaEngine` does.
 
+## Live fills are incremental (and why)
+
+The naive approach — re-send the whole transcript and rewrite every section on
+each tick — gets heavier as the meeting grows and pins the GPU, which on a 16 GB
+Mac **starves WhisperKit** (transcription stalls mid-meeting). So live updates are
+incremental: `OllamaEngine.fillAgendaIncremental` sends each section's *current
+notes* plus only the *new transcript since the last update*, and the model merges
+the new info in, returning only the sections that changed. Each pass is small and
+roughly constant in cost regardless of meeting length, so the GPU frees quickly.
+`AgendaFiller` fires this once ~6 new transcript lines have arrived (content-
+triggered, not a timer). The one full re-read is `fillAgenda(mode:.refined)` on
+stop, when WhisperKit has released the GPU — that pass is authoritative; live
+drafts are best-effort previews.
+
+`scripts/ollama_incremental_smoke.py` checks that a new snippet about one topic
+updates only that section (merging into its notes), not the whole agenda.
+
 ## Run it
 
 ```bash
