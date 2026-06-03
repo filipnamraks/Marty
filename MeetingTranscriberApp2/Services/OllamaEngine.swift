@@ -78,6 +78,23 @@ final class OllamaEngine: SummaryEngine {
         var offAgenda: [String]
     }
 
+    /// A section's filled content. Normally a plain string, but defensively
+    /// tolerates a model that wraps it in a single-key object (observed with
+    /// gemma4:e4b) — we unwrap to the inner string so a quirk never throws.
+    struct SectionValue: Decodable {
+        let text: String
+        init(from decoder: Decoder) throws {
+            let c = try decoder.singleValueContainer()
+            if let s = try? c.decode(String.self) {
+                text = s
+            } else if let obj = try? c.decode([String: String].self), let first = obj.values.first {
+                text = first
+            } else {
+                text = ""
+            }
+        }
+    }
+
     func fillAgenda(agenda: Agenda, transcript: [TranscriptLine], mode: FillMode) async throws -> AgendaFillResult {
         guard !transcript.isEmpty else { throw SummaryEngineError.emptyTranscript }
 
@@ -117,22 +134,34 @@ final class OllamaEngine: SummaryEngine {
             """
         }
 
+        // Two prompt details are load-bearing (verified against both models via
+        // scripts/ollama_engine_smoke.py):
+        //  1) a SINGLE generic key + "..." repeat-cue — a finite multi-key example
+        //     makes the small e2b model mirror the example's key count and drop
+        //     sections; the "..." makes it fill every id.
+        //  2) the value is described as a plain string ("never a nested object")
+        //     instead of an angle-bracket placeholder — e4b otherwise turned the
+        //     placeholder into a nested object key, breaking [String: String].
+        // SectionValue decoding below is the belt-and-suspenders for (2).
         let system = """
         You are Marty, an editorial meeting analyst. The user has an agenda; you are filling \
         in each section based on what was actually discussed in the transcript.
 
         Respond ONLY with a JSON object, no prose around it:
         {
-          "sections": { "<section_id>": "<markdown content for that section>", ... },
+          "sections": { "the-section-id": "markdown text for that section, as a plain string", ... },
           "offAgenda": ["short bullet of a substantive discussion that didn't map to any heading", ...]
         }
 
+        The "..." means: repeat for EVERY section id in the input. Each value in "sections" is a plain \
+        JSON string (markdown bullet lines separated by newlines) — never a nested object or array.
+
         Rules:
-        - The keys in "sections" MUST exactly match the section ids provided in the input.
-        - Include EVERY section id, even if the value is "".
+        - The keys in "sections" MUST exactly match the section ids provided in the input, and you \
+          MUST include EVERY id (even if the value is "").
         - \(styleNote)
         - "offAgenda" captures topics that consumed real meeting time but don't belong under \
-          any heading. Empty array if everything mapped. 3-line max per item.
+          any heading. Empty array if everything mapped.
         - Never invent facts, decisions, or quotes not in the transcript.
         """
 
@@ -148,7 +177,7 @@ final class OllamaEngine: SummaryEngine {
         let text = try await chat(model: model, system: system, user: userMessage)
 
         struct Response: Decodable {
-            let sections: [String: String]
+            let sections: [String: SectionValue]
             let offAgenda: [String]?
         }
         let parsed: Response
@@ -160,7 +189,7 @@ final class OllamaEngine: SummaryEngine {
 
         var byId: [UUID: String] = [:]
         for (key, value) in parsed.sections {
-            if let uuid = UUID(uuidString: key) { byId[uuid] = value }
+            if let uuid = UUID(uuidString: key) { byId[uuid] = value.text }
         }
         return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
     }
