@@ -10,6 +10,8 @@ struct ContentView: View {
     @State private var showSettings: Bool = false
     @State private var showOnboarding: Bool = ContentView.shouldShowOnboardingInitially()
     @State private var showCalendarPicker: Bool = false
+    @State private var showPalette: Bool = false
+    @State private var showExport: Bool = false
     @State private var demo: DemoSession? = nil
     @StateObject private var calendar = CalendarStore()
 
@@ -20,48 +22,41 @@ struct ContentView: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            SidebarView(transcriber: transcriber,
-                        sessions: $sessions,
-                        page: $page,
-                        onOpenSettings: { showSettings = true },
-                        onRequestRecording: requestRecording)
+        ZStack {
+            Theme.D.room.ignoresSafeArea()
+            HStack(spacing: 0) {
+                SidebarView(transcriber: transcriber,
+                            sessions: $sessions,
+                            page: $page,
+                            onOpenSettings: { showSettings = true },
+                            onRequestRecording: requestRecording,
+                            onOpenPalette: { showPalette = true })
 
-            VStack(spacing: 0) {
-                if case .home = page {
-                    // Home landing IS the agenda intake — the new experience first.
-                    AgendaInputView(
-                        onAgendaReady: { agenda in
-                            transcriber.agenda = agenda
-                            page = .live
-                            if transcriber.state == .idle { transcriber.start() }
-                        },
-                        calendar: calendar
-                    )
-                } else if case .library = page {
-                    LibraryView(sessions: $sessions, page: $page)
-                } else if case .live = page, transcriber.agenda != nil {
-                    AgendaDocumentView(
-                        transcriber: transcriber,
-                        onFinish: { if transcriber.state == .running { transcriber.stop() } }
-                    )
-                } else {
-                    MastheadView(transcriber: transcriber, pastSession: loadedPast)
-                    TabsBar(selected: $selectedTab)
-                    mainContent
-                }
+                rightColumn
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(Theme.D.app)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Theme.paper)
+            FilmGrain().ignoresSafeArea()
+            if showPalette {
+                CommandPalette(
+                    calendar: calendar,
+                    onImport: importAgenda,
+                    onDismiss: { showPalette = false }
+                )
+                .transition(.opacity)
+            }
         }
-        .background(Theme.paper)
-        .tint(Theme.ink)
+        .animation(.easeOut(duration: 0.15), value: showPalette)
+        .tint(Theme.accent)
         .frame(minWidth: 1100, minHeight: 720)
         .onAppear {
             refreshSessions()
         }
         .onReceive(NotificationCenter.default.publisher(for: .martyRunDemo)) { _ in
             runDemo()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .martyTogglePalette)) { _ in
+            showPalette.toggle()
         }
         .task { await calendar.refresh() }
         .onReceive(calendarRefreshTimer) { _ in
@@ -118,6 +113,63 @@ struct ContentView: View {
         .sheet(isPresented: $showCalendarPicker) {
             CalendarPickerSheet(calendar: calendar)
         }
+        .sheet(isPresented: $showExport) {
+            ExportView(transcriber: transcriber, pastSession: loadedPast)
+                .frame(width: 640, height: 640)
+        }
+    }
+
+    // MARK: - Right column (page routing)
+
+    @ViewBuilder
+    private var rightColumn: some View {
+        if case .home = page {
+            // Home landing IS the agenda intake — the new experience first.
+            AgendaInputView(onAgendaReady: importAgenda,
+                            onOpenPalette: { showPalette = true })
+        } else if case .library = page {
+            VStack(spacing: 0) {
+                ContextBar(breadcrumb: ["Library"])
+                LibraryView(sessions: $sessions, page: $page)
+            }
+        } else if case .live = page, transcriber.agenda != nil {
+            AgendaDocumentView(
+                transcriber: transcriber,
+                onFinish: { if transcriber.state == .running { transcriber.stop() } },
+                onExport: { showExport = true }
+            )
+        } else {
+            pastSessionView
+        }
+    }
+
+    private var pastSessionView: some View {
+        VStack(spacing: 0) {
+            ContextBar(breadcrumb: ["Library", loadedPast?.summary.title ?? "Session"]) {
+                Button(action: { showExport = true }) {
+                    Text("Export")
+                        .font(.ui(13, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.D.accentDeep))
+                }
+                .buttonStyle(.plain)
+            }
+            VStack(spacing: 0) {
+                MastheadView(transcriber: transcriber, pastSession: loadedPast)
+                TabsBar(selected: $selectedTab)
+                mainContent
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Theme.paper)
+        }
+    }
+
+    private func importAgenda(_ agenda: Agenda) {
+        transcriber.agenda = agenda
+        page = .live
+        if transcriber.state == .idle { transcriber.start() }
+        showPalette = false
     }
 
     private func requestRecording() {
@@ -180,4 +232,6 @@ struct ContentView: View {
 extension Notification.Name {
     /// Posted by the View → Run Demo Session menu (⇧⌘D).
     static let martyRunDemo = Notification.Name("marty.runDemo")
+    /// Posted by the ⌘K menu command — toggles the command palette.
+    static let martyTogglePalette = Notification.Name("marty.togglePalette")
 }

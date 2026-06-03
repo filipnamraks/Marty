@@ -12,6 +12,10 @@ struct MeetingTranscriberApp2App: App {
         .defaultSize(width: 1180, height: 760)
         .commands {
             CommandGroup(after: .toolbar) {
+                Button("Fetch Agenda…") {
+                    NotificationCenter.default.post(name: .martyTogglePalette, object: nil)
+                }
+                .keyboardShortcut("k", modifiers: [.command])
                 Button("Run Demo Session") {
                     NotificationCenter.default.post(name: .martyRunDemo, object: nil)
                 }

@@ -56,6 +56,12 @@ final class DemoSession {
         t.cleanedLines = nil
         t.cleaningState = .idle
 
+        // Give the demo a real agenda so it drives the live document flow.
+        var agenda = AgendaParser.parse(markdown: Self.demoAgendaMarkdown)
+        for i in agenda.sections.indices { agenda.sections[i].status = .upcoming }
+        t.agenda = agenda
+        t.agendaFillState = .idle
+
         seenSpeakers = []
         startedAt = Date()
 
@@ -86,6 +92,18 @@ final class DemoSession {
         t.state = .stopping
         t.statusMessage = "Stopping…"
         t.activityEvents.append(ActivityEvent(.sessionEnded))
+
+        // Settle the agenda into refined notes (the "After" state).
+        if var agenda = t.agenda {
+            for i in agenda.sections.indices {
+                agenda.sections[i].status = .refined
+                if i < Self.refinedBullets.count {
+                    agenda.sections[i].filledContent = Self.refinedBullets[i]
+                }
+            }
+            t.agenda = agenda
+            t.agendaFillState = .ready
+        }
 
         Task { [weak t] in
             guard let t else { return }
@@ -127,6 +145,8 @@ final class DemoSession {
         t.lines.append(entry)
         t.activityEvents.append(ActivityEvent(.utteranceSaved, detail: line.speaker))
 
+        updateAgendaFill(offset: line.meetingOffset)
+
         // Append to .md with the synthetic timestamp.
         let f = DateFormatter()
         f.dateFormat = "HH:mm:ss"
@@ -135,6 +155,38 @@ final class DemoSession {
     }
 
     // MARK: - Helpers
+
+    /// Progressively fills the agenda as the conversation moves through topics:
+    /// sections before the active one read "Filled", the active one "Writing",
+    /// the rest "Upcoming".
+    private func updateAgendaFill(offset: TimeInterval) {
+        guard let t = transcriber, var agenda = t.agenda else { return }
+        let active = Self.sectionIndex(forOffset: offset)
+        for i in agenda.sections.indices {
+            if i < active {
+                agenda.sections[i].status = .filled
+                agenda.sections[i].filledContent = i < Self.draftBullets.count ? Self.draftBullets[i] : ""
+            } else if i == active {
+                agenda.sections[i].status = .writing
+                agenda.sections[i].filledContent = i < Self.draftBullets.count ? Self.draftBullets[i] : ""
+            } else {
+                agenda.sections[i].status = .upcoming
+                agenda.sections[i].filledContent = ""
+            }
+        }
+        t.agenda = agenda
+    }
+
+    /// Which agenda section the given meeting offset (seconds) belongs to.
+    private static func sectionIndex(forOffset offset: TimeInterval) -> Int {
+        switch offset {
+        case ..<28:    return 0   // homepage hero
+        case ..<88:    return 1   // CTA A/B test
+        case ..<140:   return 2   // pricing page
+        case ..<160:   return 3   // mobile dashboard
+        default:       return 4   // SEO & wrap-up
+        }
+    }
 
     private func startElapsedTimer() {
         tickTimer?.invalidate()
@@ -160,6 +212,37 @@ final class DemoSession {
         self.mdHandle = handle
         t.transcriptFileURL = url
     }
+
+    // MARK: - Demo agenda
+
+    /// Five sections matching the website-review script below. " — " splits each
+    /// line into a heading + subheading via AgendaParser.
+    private static let demoAgendaMarkdown = """
+        # Website Review — Weekly Sync
+        ## Homepage hero — New copy, photography & CTA placement
+        ## CTA A/B test — "Get started" vs "Try it free"
+        ## Pricing page — Simplifying the tiers
+        ## Mobile dashboard — Responsive pass
+        ## SEO & wrap-up — Meta tags and next steps
+        """
+
+    /// Short, factual bullets written live as each section is discussed.
+    private static let draftBullets: [String] = [
+        "- Homepage hero redesigned — new copy and photography.\n- CTA moved above the fold; reads more confident.",
+        "- A/B tested the CTA label: \"Try it free\" vs \"Get started\".\n- \"Try it free\" won click-through by ~11%.",
+        "- Pricing page rewritten: four tiers down to three.\n- Comparison table removed; annual toggle added.",
+        "- Mobile responsiveness pass on the dashboard.\n- Last page that breaks below 500px wide.",
+        "- SEO meta tags fixed — per-page Open Graph & Twitter cards.\n- Regroup next Thursday.",
+    ]
+
+    /// Polished, labelled bullets produced on the refine pass.
+    private static let refinedBullets: [String] = [
+        "- **Change —** homepage hero redesigned with new copy and photography.\n- **Effect —** CTA moved above the fold; the page reads more confidently.",
+        "- **Result —** \"Try it free\" beat \"Get started\" by ~11% on click-through.\n- **Caveat —** significance marginal (p≈0.04 over 9 days).\n- **Next —** a confirmation test wraps end of next week.",
+        "- **Change —** simplified four tiers to three and removed the comparison table.\n- **Add —** annual billing toggle.\n- **Effect —** \"which plan?\" support tickets fell ~20%.",
+        "- **Scope —** responsive pass on the dashboard (last page breaking below 500px).\n- **Owner —** due next Friday.",
+        "- **Fixed —** per-page Open Graph & Twitter cards (better LinkedIn previews).\n- **Next —** regroup Thursday on the A/B follow-up and mobile dashboard.",
+    ]
 
     // MARK: - Script
 

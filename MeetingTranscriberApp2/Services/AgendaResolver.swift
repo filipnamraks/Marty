@@ -47,23 +47,38 @@ final class AgendaResolver {
         let available = sources.filter { $0.isAvailable }
         guard !available.isEmpty else { throw ResolverError.noSourcesAvailable }
 
-        // Gather candidates from each source in parallel.
-        var allCandidates: [AgendaCandidate] = []
-        await withTaskGroup(of: [AgendaCandidate].self) { group in
-            for source in available {
-                group.addTask { await source.candidates(for: trimmed) }
-            }
-            for await batch in group { allCandidates.append(contentsOf: batch) }
-        }
-
+        let allCandidates = await candidates(for: trimmed)
         guard !allCandidates.isEmpty else { throw ResolverError.noCandidates }
 
         let chosenId = try await pickCandidate(intent: trimmed, candidates: allCandidates)
         guard let chosen = allCandidates.first(where: { $0.compositeId == chosenId }) else {
             // Claude returned an unknown id; fall back to the top-scored candidate.
-            return try await fetchAndParse(allCandidates[0])
+            return try await fetchAgenda(for: allCandidates[0])
         }
-        return try await fetchAndParse(chosen)
+        return try await fetchAgenda(for: chosen)
+    }
+
+    /// Gather candidates from every available source in parallel. Backs the ⌘K
+    /// command palette's live result list. Returns [] when nothing is connected.
+    func candidates(for intent: String) async -> [AgendaCandidate] {
+        let trimmed = intent.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let available = sources.filter { $0.isAvailable }
+        guard !available.isEmpty else { return [] }
+
+        var all: [AgendaCandidate] = []
+        await withTaskGroup(of: [AgendaCandidate].self) { group in
+            for source in available {
+                group.addTask { await source.candidates(for: trimmed) }
+            }
+            for await batch in group { all.append(contentsOf: batch) }
+        }
+        return all
+    }
+
+    /// Fetch + parse a single candidate the user picked in the palette.
+    func fetchAgenda(for candidate: AgendaCandidate) async throws -> Agenda {
+        try await fetchAndParse(candidate)
     }
 
     // MARK: - Picker
