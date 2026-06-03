@@ -114,8 +114,18 @@ struct ContentView: View {
             CalendarPickerSheet(calendar: calendar)
         }
         .sheet(isPresented: $showExport) {
-            ExportView(transcriber: transcriber, pastSession: loadedPast)
-                .frame(width: 640, height: 640)
+            ZStack(alignment: .topTrailing) {
+                ExportView(transcriber: transcriber, pastSession: loadedPast)
+                Button(action: { showExport = false }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(Theme.inkMuted)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .padding(14)
+            }
+            .frame(width: 640, height: 640)
         }
     }
 
