@@ -194,6 +194,88 @@ final class OllamaEngine: SummaryEngine {
         return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
     }
 
+    /// Incremental live update. Instead of re-reading the whole transcript and
+    /// rewriting every section (which gets heavier as the meeting grows and pins
+    /// the GPU, starving WhisperKit), this sends each section's CURRENT notes plus
+    /// ONLY the new transcript since the last update, and asks the model to merge
+    /// the new info in. It returns only the sections the new snippet changed — so
+    /// each call is small and roughly constant regardless of meeting length.
+    /// The authoritative full pass is still `fillAgenda(mode:.refined)` on stop.
+    func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine]) async throws -> AgendaFillResult {
+        guard !newTranscript.isEmpty else { return AgendaFillResult(sections: [:], offAgenda: []) }
+
+        let sectionsPayload = agenda.sections.map { s -> [String: Any] in
+            [
+                "id": s.id.uuidString,
+                "heading": s.heading,
+                "subheading": s.subheading as Any,
+                "currentNotes": s.filledContent,   // what we've captured so far
+            ]
+        }
+        let payloadJSON = String(
+            data: (try? JSONSerialization.data(withJSONObject: ["sections": sectionsPayload], options: [.sortedKeys])) ?? Data(),
+            encoding: .utf8
+        ) ?? "{}"
+
+        let system = """
+        You are Marty, an editorial meeting analyst updating a meeting agenda LIVE as new \
+        transcript arrives. You are given each agenda section with its CURRENT notes, and a NEW \
+        snippet of transcript since the last update. Integrate ONLY the new snippet.
+
+        Respond ONLY with a JSON object, no prose around it:
+        {
+          "sections": { "the-section-id": "the FULL updated notes for that section, as a plain string", ... },
+          "offAgenda": ["a new tangent from the snippet that fit no heading", ...]
+        }
+
+        Rules:
+        - Return ONLY the sections the new snippet actually adds to. OMIT every section the snippet \
+          doesn't change. (Most snippets touch one or two sections.)
+        - For a changed section, return its FULL updated notes: keep the existing points and merge \
+          the new info in. Do not duplicate points already present. Do not drop existing points.
+        - Each value is a plain JSON string of markdown bullet lines ("- " markers) — never a nested \
+          object or array. The "..." means repeat for each CHANGED section only.
+        - Short, factual, only what was actually said. Never invent.
+        - "offAgenda" holds only NEW tangents from this snippet; empty array if none.
+        """
+
+        let currentNotes = agenda.sections
+            .filter { !$0.filledContent.isEmpty }
+            .map { "[\($0.id.uuidString)] \($0.heading): \($0.filledContent)" }
+            .joined(separator: "\n")
+
+        let userMessage = """
+        AGENDA SECTIONS (id, heading, current notes):
+        \(payloadJSON)
+
+        NOTES SO FAR (for context; do not repeat unchanged):
+        \(currentNotes.isEmpty ? "(nothing captured yet)" : currentNotes)
+
+        NEW TRANSCRIPT SNIPPET (integrate only this):
+        \(Self.serialize(newTranscript))
+        """
+
+        let text = try await chat(model: draftModel, system: system, user: userMessage)
+
+        struct Response: Decodable {
+            let sections: [String: SectionValue]
+            let offAgenda: [String]?
+        }
+        let parsed: Response
+        do {
+            parsed = try JSONDecoder().decode(Response.self, from: Data(text.utf8))
+        } catch {
+            throw SummaryEngineError.decoding("incremental fill JSON: \(error.localizedDescription) — raw: \(text.prefix(200))")
+        }
+
+        var byId: [UUID: String] = [:]
+        for (key, value) in parsed.sections {
+            // Only accept ids that exist in the agenda; ignore empties (no change).
+            if let uuid = UUID(uuidString: key), !value.text.isEmpty { byId[uuid] = value.text }
+        }
+        return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
+    }
+
     // MARK: - Summary (legacy / past-session path)
 
     func summarize(transcript: [TranscriptLine]) async throws -> MeetingSummary {

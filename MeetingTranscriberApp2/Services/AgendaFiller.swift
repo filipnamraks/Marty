@@ -1,32 +1,38 @@
 import Foundation
 
-/// Periodically asks Claude to fill the meeting's agenda from the live transcript,
-/// and runs one final polish pass on stop. Updates AgendaSection.filledContent +
-/// status on the @MainActor LiveTranscriber so the UI re-renders.
+/// Keeps the meeting agenda filled from the live transcript, then runs one final
+/// polish pass on stop. Updates AgendaSection.filledContent + status on the
+/// @MainActor LiveTranscriber so the UI re-renders.
 ///
-/// Pacing: at most one in-flight request at a time; minimum 30s between draft
-/// passes; skips a tick if no new transcript lines arrived.
+/// Live updates are INCREMENTAL: each pass sends only the new transcript since the
+/// last update (plus the sections' current notes) and merges the new info in — it
+/// never re-reads the whole transcript. That keeps each pass small and roughly
+/// constant in cost no matter how long the meeting runs, so the model only briefly
+/// touches the GPU and doesn't starve WhisperKit. The one full re-read happens in
+/// finalize() on stop, when WhisperKit has released the GPU.
 @MainActor
 final class AgendaFiller {
     private weak var transcriber: LiveTranscriber?
     private var tickTask: Task<Void, Never>?
-    private var lastLineCount = 0
-    private var lastFillAt: Date?
+    private var lastProcessedLineCount = 0
     private var inFlight = false
 
-    private let draftInterval: TimeInterval = 30
+    /// Fire a live update once this many new transcript lines have accumulated.
+    /// Content-triggered (not a wall-clock timer): no work when nothing was said,
+    /// a bounded delta when speech is flowing.
+    private let newLinesThreshold = 6
 
     init(transcriber: LiveTranscriber) {
         self.transcriber = transcriber
     }
 
-    /// Begin periodic draft fills. Safe to call multiple times — repeat calls are no-ops.
+    /// Begin live incremental fills. Safe to call multiple times — repeat calls are no-ops.
     func start() {
         guard tickTask == nil else { return }
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5 * 1_000_000_000)
-                await self?.maybeDraftFill()
+                try? await Task.sleep(nanoseconds: 3 * 1_000_000_000)
+                await self?.maybeIncrementalFill()
             }
         }
     }
@@ -57,20 +63,80 @@ final class AgendaFiller {
 
     // MARK: - Private
 
-    private func maybeDraftFill() async {
-        guard let t = transcriber, var agenda = t.agenda else { return }
+    private func maybeIncrementalFill() async {
+        guard let t = transcriber, t.agenda != nil else { return }
         guard t.state == .running else { return }
         guard !inFlight else { return }
-        guard t.lines.count > lastLineCount else { return }
-        if let last = lastFillAt, Date().timeIntervalSince(last) < draftInterval { return }
+        let total = t.lines.count
+        guard total - lastProcessedLineCount >= newLinesThreshold else { return }
 
         inFlight = true
         defer { inFlight = false }
-        lastLineCount = t.lines.count
-        lastFillAt = Date()
+        // Capture the delta and advance the cursor BEFORE the await; lines that
+        // arrive during the request are picked up by the next tick.
+        let newLines = Array(t.lines[lastProcessedLineCount..<total])
+        lastProcessedLineCount = total
 
-        await runFill(agenda: &agenda, transcript: t.lines, mode: .draft)
+        await runIncremental(newLines: newLines)
+    }
+
+    /// Merge only the sections the new snippet changed; leave the rest untouched.
+    private func runIncremental(newLines: [TranscriptLine]) async {
+        guard let t = transcriber, var agenda = t.agenda else { return }
+        let engine = OllamaEngine.fromStorage()
+
+        let result: OllamaEngine.AgendaFillResult
+        do {
+            result = try await engine.fillAgendaIncremental(agenda: agenda, newTranscript: newLines)
+        } catch {
+            transcriber?.agendaFillState = .error((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            return
+        }
+        transcriber?.agendaFillState = .ready
+        guard t.state == .running else { return }
+
+        let changed = Set(result.sections.keys)
+        for i in agenda.sections.indices {
+            if agenda.sections[i].userEdited { continue }
+            let id = agenda.sections[i].id
+            guard let merged = result.sections[id] else { continue }   // unchanged → leave as-is
+            agenda.sections[i].filledContent = merged
+            agenda.sections[i].filledAt = Date()
+            agenda.sections[i].isDraft = true
+            agenda.sections[i].status = .filled
+        }
+        // Highlight the latest changed section as "writing now".
+        if let lastChanged = agenda.sections.lastIndex(where: { changed.contains($0.id) && !$0.userEdited }) {
+            agenda.sections[lastChanged].status = .writing
+        }
+        // Off-agenda is incremental too: append new tangents to the parking lot.
+        appendOffAgenda(result.offAgenda, into: &agenda, draft: true)
+
         if t.state == .running { t.agenda = agenda }
+    }
+
+    /// Append new off-agenda bullets to the "Off agenda" parking-lot section,
+    /// creating it on first use. (The final pass replaces it wholesale instead.)
+    private func appendOffAgenda(_ items: [String], into agenda: inout Agenda, draft: Bool) {
+        guard !items.isEmpty else { return }
+        let parkingHeading = "Off agenda"
+        let newBullets = items.map { "- \($0)" }.joined(separator: "\n")
+        if let idx = agenda.sections.firstIndex(where: { $0.heading == parkingHeading }) {
+            let existing = agenda.sections[idx].filledContent
+            agenda.sections[idx].filledContent = existing.isEmpty ? newBullets : existing + "\n" + newBullets
+            agenda.sections[idx].isDraft = draft
+            agenda.sections[idx].status = .offAgenda
+        } else {
+            agenda.sections.append(AgendaSection(
+                heading: parkingHeading,
+                subheading: "Topics that didn't fit the agenda",
+                level: 2,
+                filledContent: newBullets,
+                filledAt: Date(),
+                isDraft: draft,
+                status: .offAgenda
+            ))
+        }
     }
 
     private func runFill(agenda: inout Agenda, transcript: [TranscriptLine], mode: OllamaEngine.FillMode) async {
