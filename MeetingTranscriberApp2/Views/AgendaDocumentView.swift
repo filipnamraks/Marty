@@ -27,6 +27,9 @@ struct AgendaDocumentView: View {
 
     private var isRecording: Bool { transcriber.state == .running || transcriber.state == .loading }
     private var isRefined: Bool { transcriber.state == .idle && transcriber.agendaFillState == .ready }
+    /// Once a meeting is done (refined / saved), the agenda reads like a plain
+    /// document — no status chips, meter, or colored accents.
+    private var plain: Bool { !isRecording }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,10 +41,17 @@ struct AgendaDocumentView: View {
                     .padding(.top, 18)
                     .padding(.bottom, isRecording && tab == .agenda ? 0 : 24)
             }
+            .contentShape(Rectangle())
+            .onTapGesture { endEditing() }   // click anywhere off a field to stop editing
             if isRecording && tab == .agenda {
                 TranscriptDock(line: transcriber.lines.last, feedingSection: writingNumber)
             }
         }
+    }
+
+    /// Resign first responder so any in-progress inline edit commits.
+    private func endEditing() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
     // MARK: - Top bar (Chrome tabs + actions)
@@ -91,7 +101,8 @@ struct AgendaDocumentView: View {
             }
         } else if isRefined {
             HStack(spacing: 8) {
-                barButton("Copy", filled: false, action: copyAgenda)
+                barButton("Copy", filled: false, action: copyCurrent)
+                barButton("Save as PDF", filled: false, action: savePDFCurrent)
                 barButton("Add to library", filled: true, action: onAddToLibrary)
                 barButton("Export", filled: false, action: onExport)
             }
@@ -151,8 +162,10 @@ struct AgendaDocumentView: View {
                 .font(.mono(12.5)).foregroundStyle(Theme.inkMuted)
                 .padding(.top, 7)
 
-            SectionMeter(segments: meterSegments, label: meterLabel)
-                .padding(.top, 16)
+            if !plain {
+                SectionMeter(segments: meterSegments, label: meterLabel)
+                    .padding(.top, 16)
+            }
 
             Rectangle().fill(Theme.stroke).frame(height: 1).padding(.top, 16)
 
@@ -161,6 +174,7 @@ struct AgendaDocumentView: View {
                     SectionRow(
                         section: section,
                         number: idx + 1,
+                        plain: plain,
                         onEditHeading: updateSection(section.id) { $0.heading = $1; $0.userEdited = true },
                         onEditSubheading: updateSection(section.id) { $0.subheading = $1.isEmpty ? nil : $1; $0.userEdited = true },
                         onEditBody: updateSection(section.id) { sec, text in
@@ -228,10 +242,35 @@ struct AgendaDocumentView: View {
         return "\(date) · \(count) section\(count == 1 ? "" : "s")"
     }
 
-    private func copyAgenda() {
-        guard let agenda = transcriber.agenda else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(AgendaMarkdown.render(agenda), forType: .string)
+    /// The current tab rendered as a plain Word-style document (no app UI).
+    private func currentDocument() -> NSAttributedString? {
+        switch tab {
+        case .agenda:
+            guard let agenda = transcriber.agenda else { return nil }
+            return DocumentExport.agenda(agenda)
+        case .summary:
+            guard let summary = transcriber.summary else { return nil }
+            return DocumentExport.summary(summary)
+        case .transcript:
+            let lines = transcriber.cleanedLines ?? transcriber.lines
+            guard !lines.isEmpty else { return nil }
+            return DocumentExport.transcript(lines)
+        }
+    }
+
+    private var documentName: String {
+        let base = transcriber.agenda?.title ?? transcriber.summary?.title ?? "Meeting"
+        return "\(base) — \(tab.rawValue)"
+    }
+
+    private func copyCurrent() {
+        guard let doc = currentDocument() else { return }
+        DocumentExport.copy(doc)
+    }
+
+    private func savePDFCurrent() {
+        guard let doc = currentDocument() else { return }
+        DocumentExport.savePDF(doc, suggestedName: documentName)
     }
 
     private func formatElapsed(_ seconds: Int) -> String {
@@ -308,12 +347,13 @@ private struct TranscriptDock: View {
 private struct SectionRow: View {
     let section: AgendaSection
     let number: Int
+    var plain: Bool = false
     var onEditHeading: (String) -> Void
     var onEditSubheading: (String) -> Void
     var onEditBody: (String) -> Void
 
-    private var isWriting: Bool { section.status == .writing }
-    private var isUpcoming: Bool { section.status == .upcoming || section.status == .notCovered }
+    private var isWriting: Bool { section.status == .writing && !plain }
+    private var isUpcoming: Bool { !plain && (section.status == .upcoming || section.status == .notCovered) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -331,7 +371,9 @@ private struct SectionRow: View {
                     onCommit: onEditHeading
                 )
                 Spacer(minLength: 8)
-                StatusChip(status: section.status)
+                if !plain {
+                    StatusChip(status: section.status)
+                }
             }
 
             EditableText(
@@ -345,10 +387,11 @@ private struct SectionRow: View {
             EditableSectionBody(
                 content: section.filledContent,
                 isWriting: isWriting,
+                plain: plain,
                 onCommit: onEditBody
             )
         }
-        .padding(.vertical, 20)
+        .padding(.vertical, plain ? 14 : 20)
         .padding(.horizontal, isWriting ? 28 : 0)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(alignment: .leading) {
@@ -368,33 +411,29 @@ private struct SectionRow: View {
 private struct EditableSectionBody: View {
     let content: String
     let isWriting: Bool
+    var plain: Bool = false
     var onCommit: (String) -> Void
 
     @State private var editing = false
     @State private var buffer = ""
     @FocusState private var focused: Bool
 
+    private var dashColor: Color { plain ? Color(hex: 0x33353C) : Theme.accent }
+
     var body: some View {
         if editing {
-            VStack(alignment: .trailing, spacing: 6) {
-                TextEditor(text: $buffer)
-                    .font(.bodySerif(14.5))
-                    .foregroundStyle(Color(hex: 0x33353C))
-                    .scrollContentBackground(.hidden)
-                    .tint(Theme.accent)
-                    .focused($focused)
-                    .frame(minHeight: 90)
-                    .padding(8)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(Theme.sidebar))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.accent.opacity(0.5), lineWidth: 1.5))
-                Button(action: commit) {
-                    Text("Done").font(.ui(11, weight: .semibold)).foregroundStyle(Theme.accent)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.return, modifiers: .command)
-            }
-            .onChange(of: focused) { _, f in if !f { commit() } }
-            .padding(.top, 5)
+            // Seamless — no box, no outline. Click elsewhere to stop editing.
+            TextEditor(text: $buffer)
+                .font(.bodySerif(14.5))
+                .foregroundStyle(Color(hex: 0x33353C))
+                .scrollContentBackground(.hidden)
+                .tint(Theme.ink)
+                .focused($focused)
+                .frame(minHeight: 54)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: focused) { _, f in if !f { commit() } }
+                .padding(.top, 5)
         } else if content.isEmpty {
             Text("Click to add notes…")
                 .font(.bodySerif(14.5)).foregroundStyle(Theme.inkMuted.opacity(0.7))
@@ -416,7 +455,7 @@ private struct EditableSectionBody: View {
         return VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(lines.enumerated()), id: \.offset) { i, line in
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    Text("—").font(.bodySerif(14.5)).foregroundStyle(Theme.accent)
+                    Text("—").font(.bodySerif(14.5)).foregroundStyle(dashColor)
                     HStack(alignment: .firstTextBaseline, spacing: 2) {
                         formattedLine(line)
                             .font(.bodySerif(14.5))
