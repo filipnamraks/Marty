@@ -15,8 +15,16 @@ final class VADChunker {
 
     private let speechThresholdRMS: Float
     private let silenceTimeoutMs: Double
+    private let noiseFloorMultiplier: Float
     private let minSpeechMs: Double = 300
     private let maxUtteranceMs: Double = 25000
+
+    /// EMA of the RMS during confirmed non-speech, so the speech threshold
+    /// adapts to the room: a fan or hum no longer triggers utterances, and the
+    /// fixed floor no longer swallows quiet talkers in a silent room. Updated
+    /// ONLY outside speech — learning during speech would drift the floor up
+    /// until it swallowed the speaker.
+    private var noiseFloor: Float = 0
 
     private var samples: [Float] = []
     private var inSpeech = false
@@ -32,10 +40,12 @@ final class VADChunker {
     init(label: String,
          speechThresholdRMS: Float = 0.01,
          silenceTimeoutMs: Double = 500,
+         noiseFloorMultiplier: Float = 2.5,
          onUtterance: @escaping (String, URL) -> Void) {
         self.label = label
         self.speechThresholdRMS = speechThresholdRMS
         self.silenceTimeoutMs = silenceTimeoutMs
+        self.noiseFloorMultiplier = noiseFloorMultiplier
         self.onUtterance = onUtterance
         self.tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("meeting-transcriber")
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
@@ -77,7 +87,11 @@ final class VADChunker {
 
         let durMs = Double(frameLength) / sampleRate * 1000
 
-        if rms > speechThresholdRMS {
+        // Adaptive threshold: never below the absolute floor, scaled above the
+        // learned room noise.
+        let threshold = max(speechThresholdRMS, noiseFloor * noiseFloorMultiplier)
+
+        if rms > threshold {
             samples.append(contentsOf: mono)
             bufferedMs += durMs
             speechMs += durMs
@@ -97,6 +111,7 @@ final class VADChunker {
                     flush()
                 }
             } else {
+                noiseFloor = noiseFloor * 0.95 + rms * 0.05
                 samples.removeAll(keepingCapacity: true)
                 bufferedMs = 0
                 speechMs = 0

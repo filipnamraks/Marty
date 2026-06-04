@@ -20,18 +20,18 @@ NEW_SNIPPET="""[10:01:15] [Them] On the onboarding redesign — v2 design is loc
 
 SYSTEM="""You are Marty, an editorial meeting analyst updating a meeting agenda LIVE as new \
 transcript arrives. You are given each agenda section with its CURRENT notes, and a NEW \
-snippet of transcript since the last update. Integrate ONLY the new snippet.
+snippet of transcript since the last update. Extract what the snippet ADDS.
 
 Respond ONLY with a JSON object, no prose around it:
 {
-  "sections": { "the-section-id": "the FULL updated notes for that section, as a plain string", ... },
+  "sections": { "the-section-id": "- first new point\\n- second new point\\n- third new point", ... },
   "offAgenda": ["a new tangent from the snippet that fit no heading", ...]
 }
 
 Rules:
-- Return ONLY the sections the new snippet actually adds to. OMIT every section the snippet doesn't change. (Most snippets touch one or two sections.)
-- For a changed section, return its FULL updated notes: keep the existing points and merge the new info in. Do not duplicate points already present. Do not drop existing points.
-- Each value is a plain JSON string of markdown bullet lines ("- " markers) — never a nested object or array. The "..." means repeat for each CHANGED section only.
+- Return ONLY the sections the new snippet adds something to. OMIT every section the snippet doesn't change. (Most snippets touch one or two sections.)
+- For a changed section, capture EVERY new fact, decision or next step from the snippet as its own "- " line — one bullet per spoken point, as many as the snippet contains. Do NOT repeat any point already in its currentNotes; the app appends what you return to the existing notes.
+- Each value is a plain JSON string — never a nested object or array. The "..." means repeat for each CHANGED section only.
 - Short, factual, only what was actually said. Never invent.
 - "offAgenda" holds only NEW tangents from this snippet; empty array if none."""
 
@@ -41,7 +41,7 @@ def main():
     # hidden chain-of-thought on the latency-critical live path.
     payload=json.dumps({"sections":SECTIONS},sort_keys=True)
     user=f"AGENDA SECTIONS (id, heading, current notes):\n{payload}\n\nNEW TRANSCRIPT SNIPPET (integrate only this):\n{NEW_SNIPPET}"
-    body={"model":"gemma4:e2b","stream":False,"format":"json","think":False,"messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"options":{"temperature":0.2,"num_ctx":8192}}
+    body={"model":"gemma4:e2b","stream":False,"format":"json","think":False,"messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"options":{"temperature":0.2,"num_ctx":8192,"num_predict":256}}
     req=urllib.request.Request(BASE+"/api/chat",data=json.dumps(body).encode(),headers={"content-type":"application/json"})
     t0=time.time()
     with urllib.request.urlopen(req,timeout=200) as r: content=json.loads(r.read())["message"]["content"]
@@ -54,9 +54,12 @@ def main():
     print(f"  left pricing untouched (expected): {P not in changed}")
     nonstr=[k for k,v in secs.items() if not isinstance(v,str)]
     print(f"  all values strings: {not nonstr}")
+    # Append-only contract: returned bullets must be NEW (no echo of existing notes).
+    no_echo="Activation up 4.2" not in str(secs.get(O,""))
+    print(f"  no echo of existing notes (append-only): {no_echo}")
     for k,v in secs.items():
         name={M:'metrics',O:'onboarding',P:'pricing'}.get(k,k)
         print(f"  [{name}] {str(v)[:160]}")
-    ok = O in changed and M not in changed and not nonstr
+    ok = O in changed and M not in changed and not nonstr and no_echo
     print("RESULT:", "PASS" if ok else "CHECK")
 main()

@@ -216,12 +216,13 @@ final class OllamaEngine: SummaryEngine {
         return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
     }
 
-    /// Incremental live update. Instead of re-reading the whole transcript and
-    /// rewriting every section (which gets heavier as the meeting grows and pins
-    /// the GPU, starving WhisperKit), this sends each section's CURRENT notes plus
-    /// ONLY the new transcript since the last update, and asks the model to merge
-    /// the new info in. It returns only the sections the new snippet changed — so
-    /// each call is small and roughly constant regardless of meeting length.
+    /// Incremental live update, append-only. Sends each section's CURRENT notes
+    /// plus ONLY the new transcript since the last update; the model returns just
+    /// the NEW bullets per changed section (AgendaFiller appends them). With the
+    /// output no longer a growing full-section rewrite, each call stays small for
+    /// the whole meeting and `num_predict` caps a runaway generation safely —
+    /// truncating a list of fresh bullets loses a bullet, not the JSON envelope's
+    /// validity the way truncating a full rewrite did.
     /// The authoritative full pass is still `fillAgenda(mode:.refined)` on stop.
     func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine]) async throws -> AgendaFillResult {
         guard !newTranscript.isEmpty else { return AgendaFillResult(sections: [:], offAgenda: []) }
@@ -239,24 +240,32 @@ final class OllamaEngine: SummaryEngine {
             encoding: .utf8
         ) ?? "{}"
 
+        // Load-bearing prompt detail (verified via scripts/ollama_incremental_smoke.py,
+        // 3/3 runs): the example value MUST show multiple "- " bullets joined by \n.
+        // With a prose placeholder ("the NEW bullet lines…"), e2b reproducibly
+        // returned only the snippet's LAST point; the multi-bullet shape makes it
+        // capture every point. Same lesson as fillAgenda: e2b mirrors example
+        // shapes far more reliably than it follows written rules.
         let system = """
         You are Marty, an editorial meeting analyst updating a meeting agenda LIVE as new \
         transcript arrives. You are given each agenda section with its CURRENT notes, and a NEW \
-        snippet of transcript since the last update. Integrate ONLY the new snippet.
+        snippet of transcript since the last update. Extract what the snippet ADDS.
 
         Respond ONLY with a JSON object, no prose around it:
         {
-          "sections": { "the-section-id": "the FULL updated notes for that section, as a plain string", ... },
+          "sections": { "the-section-id": "- first new point\\n- second new point\\n- third new point", ... },
           "offAgenda": ["a new tangent from the snippet that fit no heading", ...]
         }
 
         Rules:
-        - Return ONLY the sections the new snippet actually adds to. OMIT every section the snippet \
+        - Return ONLY the sections the new snippet adds something to. OMIT every section the snippet \
           doesn't change. (Most snippets touch one or two sections.)
-        - For a changed section, return its FULL updated notes: keep the existing points and merge \
-          the new info in. Do not duplicate points already present. Do not drop existing points.
-        - Each value is a plain JSON string of markdown bullet lines ("- " markers) — never a nested \
-          object or array. The "..." means repeat for each CHANGED section only.
+        - For a changed section, capture EVERY new fact, decision or next step from the snippet as \
+          its own "- " line — one bullet per spoken point, as many as the snippet contains. Do NOT \
+          repeat any point already in its currentNotes; the app appends what you return to the \
+          existing notes.
+        - Each value is a plain JSON string — never a nested object or array. The "..." means \
+          repeat for each CHANGED section only.
         - Short, factual, only what was actually said. Never invent.
         - "offAgenda" holds only NEW tangents from this snippet; empty array if none.
         """
@@ -272,7 +281,8 @@ final class OllamaEngine: SummaryEngine {
         \(Self.serialize(newTranscript))
         """
 
-        let text = try await chat(model: draftModel, system: system, user: userMessage, think: false)
+        let text = try await chat(model: draftModel, system: system, user: userMessage,
+                                  think: false, numPredict: 256)
 
         struct Response: Decodable {
             let sections: [String: SectionValue]
@@ -443,7 +453,12 @@ final class OllamaEngine: SummaryEngine {
     /// reasoning, so the latency-critical live path passes `false` (3× faster,
     /// JSON contract verified intact). `nil` leaves the model default — the final
     /// refine pass keeps thinking, since the GPU is free once recording stops.
-    private func chat(model: String, system: String, user: String, think: Bool? = nil) async throws -> String {
+    private func chat(model: String, system: String, user: String,
+                      think: Bool? = nil, numPredict: Int? = nil) async throws -> String {
+        var options: [String: Any] = ["temperature": 0.2, "num_ctx": 8192]
+        // Only safe for bounded outputs (append-only fills) — capping a
+        // full-document rewrite truncates mid-JSON and breaks the decode.
+        if let numPredict { options["num_predict"] = numPredict }
         var body: [String: Any] = [
             "model": model,
             "stream": false,
@@ -452,7 +467,7 @@ final class OllamaEngine: SummaryEngine {
                 ["role": "system", "content": system],
                 ["role": "user", "content": user],
             ],
-            "options": ["temperature": 0.2, "num_ctx": 8192],
+            "options": options,
         ]
         if let think { body["think"] = think }
 
