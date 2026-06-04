@@ -2,14 +2,19 @@ import AVFoundation
 import Foundation
 
 // Energy-based VAD that accumulates speech into utterances.
-// When 800ms of silence follows speech (>=300ms long), flushes the utterance
-// as a .caf file and invokes the callback with (label, file URL).
+// When `silenceTimeoutMs` of silence follows speech (>=300ms long), flushes the
+// utterance as a .caf file and invokes the callback with (label, file URL).
+//
+// The silence timeout is the floor of perceived latency: nothing reaches
+// WhisperKit until the speaker has paused that long. 500ms (down from the
+// original 800) trades a little more mid-sentence splitting for ~300ms less
+// lag per utterance — the rolling Whisper prompt compensates for the splits.
 final class VADChunker {
     private let label: String
     private let onUtterance: (String, URL) -> Void
 
-    private let speechThresholdRMS: Float = 0.01
-    private let silenceTimeoutMs: Double = 800
+    private let speechThresholdRMS: Float
+    private let silenceTimeoutMs: Double
     private let minSpeechMs: Double = 300
     private let maxUtteranceMs: Double = 25000
 
@@ -24,8 +29,13 @@ final class VADChunker {
     private var utteranceCounter = 0
     private let serialQueue = DispatchQueue(label: "vad-chunker")
 
-    init(label: String, onUtterance: @escaping (String, URL) -> Void) {
+    init(label: String,
+         speechThresholdRMS: Float = 0.01,
+         silenceTimeoutMs: Double = 500,
+         onUtterance: @escaping (String, URL) -> Void) {
         self.label = label
+        self.speechThresholdRMS = speechThresholdRMS
+        self.silenceTimeoutMs = silenceTimeoutMs
         self.onUtterance = onUtterance
         self.tmpDir = FileManager.default.temporaryDirectory.appendingPathComponent("meeting-transcriber")
         try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)

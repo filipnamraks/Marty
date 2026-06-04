@@ -58,6 +58,28 @@ final class OllamaEngine: SummaryEngine {
         return (try? JSONDecoder().decode(V.self, from: data).version) ?? "unknown"
     }
 
+    /// Load the draft model into GPU memory ahead of the first live fill. The
+    /// cold load measured ~7s and used to land minutes into a meeting (it
+    /// visibly stuttered the whole machine); pre-warming moves that cost to
+    /// record-start, before anyone is talking. An empty `messages` array makes
+    /// Ollama load the model and return immediately. Best-effort by design:
+    /// errors are swallowed — the first real fill loads the model anyway.
+    func prewarm() async {
+        // num_ctx must match chat()'s — Ollama re-allocates the runner when the
+        // context size changes, which would re-trigger the load stall mid-meeting.
+        let body: [String: Any] = [
+            "model": draftModel,
+            "messages": [[String: Any]](),
+            "options": ["num_ctx": 8192],
+        ]
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.timeoutInterval = 60
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
     func listModels() async throws -> [String] {
         let url = baseURL.appendingPathComponent("api/tags")
         let (data, response) = try await dataMappingErrors(URLRequest(url: url))
@@ -239,23 +261,18 @@ final class OllamaEngine: SummaryEngine {
         - "offAgenda" holds only NEW tangents from this snippet; empty array if none.
         """
 
-        let currentNotes = agenda.sections
-            .filter { !$0.filledContent.isEmpty }
-            .map { "[\($0.id.uuidString)] \($0.heading): \($0.filledContent)" }
-            .joined(separator: "\n")
-
+        // Each section's current notes ride along in payloadJSON only — an earlier
+        // version repeated them in a separate "NOTES SO FAR" block, doubling the
+        // (growing) prefill on every call for no benefit.
         let userMessage = """
         AGENDA SECTIONS (id, heading, current notes):
         \(payloadJSON)
-
-        NOTES SO FAR (for context; do not repeat unchanged):
-        \(currentNotes.isEmpty ? "(nothing captured yet)" : currentNotes)
 
         NEW TRANSCRIPT SNIPPET (integrate only this):
         \(Self.serialize(newTranscript))
         """
 
-        let text = try await chat(model: draftModel, system: system, user: userMessage)
+        let text = try await chat(model: draftModel, system: system, user: userMessage, think: false)
 
         struct Response: Decodable {
             let sections: [String: SectionValue]
@@ -420,8 +437,14 @@ final class OllamaEngine: SummaryEngine {
     // MARK: - Core HTTP
 
     /// POST /api/chat with format:"json", returns the assistant message content (a JSON string).
-    private func chat(model: String, system: String, user: String) async throws -> String {
-        let body: [String: Any] = [
+    ///
+    /// `think` controls the model's hidden chain-of-thought (gemma4 is a thinking
+    /// model). Measured on the live fill: ~19s of a ~25s call was invisible
+    /// reasoning, so the latency-critical live path passes `false` (3× faster,
+    /// JSON contract verified intact). `nil` leaves the model default — the final
+    /// refine pass keeps thinking, since the GPU is free once recording stops.
+    private func chat(model: String, system: String, user: String, think: Bool? = nil) async throws -> String {
+        var body: [String: Any] = [
             "model": model,
             "stream": false,
             "format": "json",
@@ -431,6 +454,7 @@ final class OllamaEngine: SummaryEngine {
             ],
             "options": ["temperature": 0.2, "num_ctx": 8192],
         ]
+        if let think { body["think"] = think }
 
         var request = URLRequest(url: baseURL.appendingPathComponent("api/chat"))
         request.httpMethod = "POST"

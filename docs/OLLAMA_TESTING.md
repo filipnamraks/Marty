@@ -11,8 +11,9 @@ each tick — gets heavier as the meeting grows and pins the GPU, which on a 16 
 Mac **starves WhisperKit** (transcription stalls mid-meeting). So live updates are
 incremental: `OllamaEngine.fillAgendaIncremental` sends each section's *current
 notes* plus only the *new transcript since the last update*, and the model merges
-the new info in, returning only the sections that changed. Each pass is small and
-roughly constant in cost regardless of meeting length, so the GPU frees quickly.
+the new info in, returning only the sections that changed. Each pass is far
+smaller than a full re-read (though it still grows slowly with accumulated notes
+— measured ~4s early-meeting to ~15s at minute 30), so the GPU frees quickly.
 `AgendaFiller` fires this once ~6 new transcript lines have arrived (content-
 triggered, not a timer). The one full re-read is `fillAgenda(mode:.refined)` on
 stop, when WhisperKit has released the GPU — that pass is authoritative; live
@@ -20,6 +21,20 @@ drafts are best-effort previews.
 
 `scripts/ollama_incremental_smoke.py` checks that a new snippet about one topic
 updates only that section (merging into its notes), not the whole agenda.
+
+### think:false is load-bearing on the live path
+
+gemma4 is a *thinking* model: measured with `scripts/ollama_runway_probe.py`, a
+~25–30s live fill spent **~19s generating hidden chain-of-thought** before the
+JSON answer. The live path (`fillAgendaIncremental`) passes `"think": false` —
+the same fill drops to ~4s (early meeting) / ~15s (late meeting), JSON contract
+intact. The final refine pass keeps thinking: the GPU is free once recording
+stops, so the quality is worth it there. Two related fixes ride along: the
+prompt no longer repeats every section's notes in a duplicate "NOTES SO FAR"
+block, and the app pre-warms the draft model at record-start (cold load
+measured ~7s — it used to land minutes into the meeting and stutter the whole
+machine; the pre-warm must pass the same `num_ctx` as the fills or Ollama
+re-allocates the runner and stalls again).
 
 ## Run it
 
