@@ -4,12 +4,15 @@ import Foundation
 /// polish pass on stop. Updates AgendaSection.filledContent + status on the
 /// @MainActor LiveTranscriber so the UI re-renders.
 ///
-/// Live updates are INCREMENTAL: each pass sends only the new transcript since the
-/// last update (plus the sections' current notes) and merges the new info in — it
-/// never re-reads the whole transcript. That keeps each pass small and roughly
-/// constant in cost no matter how long the meeting runs, so the model only briefly
-/// touches the GPU and doesn't starve WhisperKit. The one full re-read happens in
-/// finalize() on stop, when WhisperKit has released the GPU.
+/// Live updates are INCREMENTAL and APPEND-ONLY: each pass sends only the new
+/// transcript since the last update (plus the sections' current notes) and the
+/// model returns just the NEW bullets, which are appended here — it never
+/// re-reads the whole transcript or rewrites whole sections. That keeps each
+/// pass small and bounded no matter how long the meeting runs, so the model only
+/// briefly touches the GPU. Fills are additionally gated on WhisperKit being
+/// idle (no queued utterances), so the two engines never collide on the GPU.
+/// The one full re-read happens in finalize() on stop, when WhisperKit has
+/// released the GPU — that authoritative pass dedupes and rewrites properly.
 @MainActor
 final class AgendaFiller {
     private weak var transcriber: LiveTranscriber?
@@ -67,52 +70,83 @@ final class AgendaFiller {
         guard let t = transcriber, t.agenda != nil else { return }
         guard t.state == .running else { return }
         guard !inFlight else { return }
+        // Idle gate: only touch the GPU while WhisperKit has nothing queued.
+        // Natural speech pauses (>= the VAD silence timeout) drain the queue
+        // often enough; finalize() is the backstop if a meeting never pauses.
+        guard t.pendingTranscriptions == 0 else { return }
         let total = t.lines.count
         guard total - lastProcessedLineCount >= newLinesThreshold else { return }
 
         inFlight = true
         defer { inFlight = false }
-        // Capture the delta and advance the cursor BEFORE the await; lines that
-        // arrive during the request are picked up by the next tick.
+        // Capture the delta now; advance the cursor only on SUCCESS — otherwise
+        // a transient Ollama error would permanently drop these lines from the
+        // live agenda (only finalize() would ever see them again).
         let newLines = Array(t.lines[lastProcessedLineCount..<total])
-        lastProcessedLineCount = total
 
-        await runIncremental(newLines: newLines)
+        if await runIncremental(newLines: newLines) {
+            lastProcessedLineCount = total
+        }
     }
 
-    /// Merge only the sections the new snippet changed; leave the rest untouched.
-    private func runIncremental(newLines: [TranscriptLine]) async {
-        guard let t = transcriber, var agenda = t.agenda else { return }
+    /// Append the new bullets the snippet produced to their sections; leave the
+    /// rest untouched. Returns false on engine failure so the caller can retry
+    /// the same delta next tick.
+    private func runIncremental(newLines: [TranscriptLine]) async -> Bool {
+        guard let t = transcriber, let snapshot = t.agenda else { return false }
         let engine = OllamaEngine.fromStorage()
 
         let result: OllamaEngine.AgendaFillResult
         do {
-            result = try await engine.fillAgendaIncremental(agenda: agenda, newTranscript: newLines)
+            result = try await engine.fillAgendaIncremental(agenda: snapshot, newTranscript: newLines)
         } catch {
             transcriber?.agendaFillState = .error((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
-            return
+            return false
         }
         transcriber?.agendaFillState = .ready
-        guard t.state == .running else { return }
+        // Re-read the agenda AFTER the await: the user may have hand-edited a
+        // section mid-flight, and applying onto the pre-await snapshot would
+        // silently clobber that edit (its stale userEdited flag wouldn't show it).
+        guard t.state == .running, var agenda = t.agenda else { return true }
 
-        let changed = Set(result.sections.keys)
+        var changed: Set<UUID> = []
         for i in agenda.sections.indices {
             if agenda.sections[i].userEdited { continue }
             let id = agenda.sections[i].id
-            guard let merged = result.sections[id] else { continue }   // unchanged → leave as-is
-            agenda.sections[i].filledContent = merged
+            guard let newText = result.sections[id] else { continue }   // unchanged → leave as-is
+            let existing = agenda.sections[i].filledContent
+            // Append only bullets not already present (the model is told not to
+            // repeat, but the small draft model sometimes echoes anyway).
+            let existingKeys = Set(existing.split(separator: "\n").map(Self.bulletKey))
+            let fresh = newText.split(separator: "\n")
+                .filter { !Self.bulletKey($0).isEmpty && !existingKeys.contains(Self.bulletKey($0)) }
+                .map(String.init)
+            guard !fresh.isEmpty else { continue }
+            let appended = fresh.joined(separator: "\n")
+            agenda.sections[i].filledContent = existing.isEmpty ? appended : existing + "\n" + appended
             agenda.sections[i].filledAt = Date()
             agenda.sections[i].isDraft = true
             agenda.sections[i].status = .filled
+            changed.insert(id)
         }
         // Highlight the latest changed section as "writing now".
-        if let lastChanged = agenda.sections.lastIndex(where: { changed.contains($0.id) && !$0.userEdited }) {
+        if let lastChanged = agenda.sections.lastIndex(where: { changed.contains($0.id) }) {
             agenda.sections[lastChanged].status = .writing
         }
         // Off-agenda is incremental too: append new tangents to the parking lot.
         appendOffAgenda(result.offAgenda, into: &agenda, draft: true)
 
         if t.state == .running { t.agenda = agenda }
+        return true
+    }
+
+    /// Normalized identity of a bullet line for dedup: marker, case and
+    /// surrounding whitespace don't make a point new.
+    private static func bulletKey(_ line: Substring) -> String {
+        var s = line.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("- ") { s = String(s.dropFirst(2)) }
+        else if s.hasPrefix("-") { s = String(s.dropFirst(1)) }
+        return s.trimmingCharacters(in: .whitespaces).lowercased()
     }
 
     /// Append new off-agenda bullets to the "Off agenda" parking-lot section,

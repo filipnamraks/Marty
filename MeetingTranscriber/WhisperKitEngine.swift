@@ -1,3 +1,4 @@
+import CoreML
 import Foundation
 import WhisperKit
 
@@ -11,7 +12,18 @@ final class WhisperKitEngine: TranscriptionEngine {
     init(model: String = "openai_whisper-large-v3-v20240930",
          initialPrompt: String? = nil,
          language: String? = nil) async throws {
-        let config = WhisperKitConfig(model: model)
+        // Pin inference to ANE+CPU, off the Metal GPU. The live Ollama fills
+        // monopolize the GPU in bursts; on the default ("prefer ANE") options
+        // some configs still put the encoder on .cpuAndGPU, which made
+        // transcription queue behind LLM jobs and drop sentences. Explicit
+        // pinning guarantees the two engines run on different silicon.
+        let config = WhisperKitConfig(
+            model: model,
+            computeOptions: ModelComputeOptions(
+                audioEncoderCompute: .cpuAndNeuralEngine,
+                textDecoderCompute: .cpuAndNeuralEngine
+            )
+        )
         self.pipe = try await WhisperKit(config)
         self.initialPrompt = initialPrompt
         self.language = language
