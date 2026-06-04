@@ -69,6 +69,10 @@ final class LiveTranscriber {
     private var startedAt: Date?
     private var elapsedTimer: Timer?
     private var seenSpeakers: Set<String> = []
+    /// Agenda/context terms that anchor the rolling Whisper prompt all session.
+    private var agendaTerms: String?
+    /// Where this session's utterance audio is kept (transcriptsDir/{stamp}/audio).
+    private var sessionAudioDir: URL?
 
     func start() {
         guard state == .idle else { return }
@@ -102,15 +106,35 @@ final class LiveTranscriber {
                     let trimmed = self.sessionContext.trimmingCharacters(in: .whitespacesAndNewlines)
                     return trimmed.isEmpty ? nil : trimmed
                 }()
-                let loadedEngine = try await WhisperKitEngine(initialPrompt: prompt)
+                self.agendaTerms = prompt
+                let loadedEngine = try await WhisperKitEngine(model: WhisperConfig.model,
+                                                              initialPrompt: prompt,
+                                                              language: WhisperConfig.languageCode)
                 self.engine = loadedEngine
+
+                // Pre-warm the live draft model so its multi-second cold load
+                // happens now — not minutes in, on the first fill, where it
+                // visibly stuttered the machine. Fire-and-forget.
+                if self.agenda != nil {
+                    Task.detached { await OllamaEngine.fromStorage().prewarm() }
+                }
 
                 let transcriptsDir = SessionsScanner.transcriptsDir
                 try? FileManager.default.createDirectory(at: transcriptsDir,
                                                          withIntermediateDirectories: true)
                 let ts = DateFormatter()
                 ts.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-                let url = transcriptsDir.appendingPathComponent("\(ts.string(from: Date())).md")
+                let stamp = ts.string(from: Date())
+                let url = transcriptsDir.appendingPathComponent("\(stamp).md")
+
+                // Keep this session's utterance audio next to the transcript so a
+                // higher-quality re-transcription pass stays possible. Deleted with
+                // the session (SessionsScanner.delete trashes the {stamp} folder).
+                let audioDir = transcriptsDir.appendingPathComponent(stamp)
+                    .appendingPathComponent("audio")
+                try? FileManager.default.createDirectory(at: audioDir,
+                                                         withIntermediateDirectories: true)
+                self.sessionAudioDir = audioDir
                 FileManager.default.createFile(atPath: url.path, contents: nil)
                 let handle = try FileHandle(forWritingTo: url)
                 let header = DateFormatter()
@@ -175,12 +199,23 @@ final class LiveTranscriber {
                                     formatter.dateFormat = "HH:mm:ss"
                                     let line = "[\(formatter.string(from: timestamp))] [\(label)] \(trimmed)\n"
                                     try? self.mdHandle?.write(contentsOf: Data(line.utf8))
+                                    self.updateRollingPrompt()
                                 }
                             }
                         } catch {
                             // ignore individual errors
                         }
-                        try? FileManager.default.removeItem(at: fileURL)
+                        // Keep the source audio (it's the only copy of what was
+                        // actually said) — kept even when transcription failed,
+                        // since that's exactly the clip worth re-running later.
+                        if let audioDir = self.sessionAudioDir {
+                            try? FileManager.default.moveItem(
+                                at: fileURL,
+                                to: audioDir.appendingPathComponent(fileURL.lastPathComponent)
+                            )
+                        } else {
+                            try? FileManager.default.removeItem(at: fileURL)
+                        }
                     }
                 }
 
@@ -222,6 +257,8 @@ final class LiveTranscriber {
             self.mdHandle = nil
             self.engine = nil
             self.startedAt = nil
+            self.sessionAudioDir = nil
+            self.agendaTerms = nil
             self.state = .idle
             self.statusMessage = "Ready when you are"
 
@@ -294,6 +331,23 @@ final class LiveTranscriber {
             summaryState = .error(error.localizedDescription)
             appendEvent(.info, detail: "summary error")
         }
+    }
+
+    /// Whisper uses its prompt as previous-utterance context. Re-derive it after
+    /// every line: agenda terms keep proper nouns biased all session, the tail of
+    /// the recent transcript gives cross-utterance continuity (the engine re-reads
+    /// it per utterance). Capped ~600 chars, well under Whisper's 224-token budget.
+    private func updateRollingPrompt() {
+        var tailParts: [String] = []
+        var chars = 0
+        for line in lines.reversed() {
+            chars += line.text.count + 1
+            if chars > 600 { break }
+            tailParts.append(line.text)
+        }
+        let recent = tailParts.reversed().joined(separator: " ")
+        let parts = [agendaTerms, recent.isEmpty ? nil : recent].compactMap { $0 }
+        engine?.initialPrompt = parts.isEmpty ? nil : parts.joined(separator: ". ")
     }
 
     private func appendEvent(_ kind: ActivityEvent.Kind, detail: String? = nil) {
