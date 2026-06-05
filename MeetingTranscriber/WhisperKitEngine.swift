@@ -4,11 +4,17 @@ import WhisperKit
 final class WhisperKitEngine: TranscriptionEngine {
     private let pipe: WhisperKit
     var initialPrompt: String?
+    /// ISO language code ("en", "sv"). nil = auto-detect per utterance —
+    /// pinning skips detection, which misfires on short clips.
+    var language: String?
 
-    init(model: String = "openai_whisper-large-v3-v20240930", initialPrompt: String? = nil) async throws {
+    init(model: String = "openai_whisper-large-v3-v20240930",
+         initialPrompt: String? = nil,
+         language: String? = nil) async throws {
         let config = WhisperKitConfig(model: model)
         self.pipe = try await WhisperKit(config)
         self.initialPrompt = initialPrompt
+        self.language = language
     }
 
     func transcribe(audioPath: String) async throws -> String {
@@ -19,17 +25,23 @@ final class WhisperKitEngine: TranscriptionEngine {
         return results.map { $0.text }.joined(separator: " ")
     }
 
-    // Build DecodingOptions with the user's session context tokenized as a Whisper "prompt".
-    // Whisper uses this as previous-utterance context, biasing its vocabulary toward
-    // names and terms the user mentioned.
+    // Build DecodingOptions from the rolling prompt and pinned language.
+    // The prompt is tokenized as Whisper's previous-utterance context, biasing
+    // its vocabulary toward names and terms the speakers actually used.
     private func decodeOptions() -> DecodingOptions? {
-        guard let prompt = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !prompt.isEmpty,
-              let tokenizer = pipe.tokenizer else {
-            return nil
+        var options: DecodingOptions?
+        if let prompt = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !prompt.isEmpty,
+           let tokenizer = pipe.tokenizer {
+            // Convention: leading space helps tokenizer treat it as continuation.
+            let tokens = tokenizer.encode(text: " " + prompt).map { Int($0) }
+            options = DecodingOptions(promptTokens: tokens)
         }
-        // Convention: leading space helps tokenizer treat it as continuation.
-        let tokens = tokenizer.encode(text: " " + prompt).map { Int($0) }
-        return DecodingOptions(promptTokens: tokens)
+        if let language {
+            var withLanguage = options ?? DecodingOptions()
+            withLanguage.language = language
+            options = withLanguage
+        }
+        return options
     }
 }

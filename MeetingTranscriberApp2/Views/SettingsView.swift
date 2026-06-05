@@ -9,6 +9,8 @@ struct SettingsView: View {
     @State private var draftModel: String = LocalLLM.draftModel
     @State private var refineModel: String = LocalLLM.refineModel
     @State private var baseURL: String = LocalLLM.baseURLString
+    @State private var whisperModel: String = WhisperConfig.model
+    @State private var whisperLanguage: String = WhisperConfig.languageSetting
     @State private var ollamaStatus: OllamaStatus = .idle
     @State private var nameField: String = ""
     @Bindable private var profile: UserProfile = .shared
@@ -49,6 +51,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 24) {
                 profileSection
                 localModelSection
+                transcriptionSection
                 googleCalendarSection
                 notionSection
             }
@@ -114,19 +117,46 @@ struct SettingsView: View {
         }
     }
 
-    private func modelField(title: String, text: Binding<String>) -> some View {
+    private var transcriptionSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fieldLabel("TRANSCRIPTION (WHISPERKIT)")
+            caption("On-device speech-to-text. Turbo is near large-v3 accuracy at a fraction of the cost — leaving more of the machine to the live agenda fills.")
+
+            modelField(title: "Whisper", text: $whisperModel,
+                       placeholder: WhisperConfig.defaultModel,
+                       suggestions: WhisperConfig.modelSuggestions)
+
+            HStack(spacing: 10) {
+                Text("Language")
+                    .font(.ui(12)).foregroundStyle(Theme.inkSoft)
+                    .frame(width: 84, alignment: .leading)
+                Picker("", selection: $whisperLanguage) {
+                    ForEach(WhisperConfig.languageOptions, id: \.code) { opt in
+                        Text(opt.label).tag(opt.code)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+            }
+            caption("Pinning the language skips per-utterance detection — more accurate on short clips.")
+        }
+    }
+
+    private func modelField(title: String, text: Binding<String>,
+                            placeholder: String = "gemma4:e2b",
+                            suggestions: [LocalModelOption] = LocalLLM.suggestions) -> some View {
         HStack(spacing: 10) {
             Text(title)
                 .font(.ui(12)).foregroundStyle(Theme.inkSoft)
                 .frame(width: 84, alignment: .leading)
-            TextField("gemma4:e2b", text: text)
+            TextField(placeholder, text: text)
                 .textFieldStyle(.plain).font(.mono(12))
                 .padding(8)
                 .background(Theme.sidebar)
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             Menu {
-                ForEach(LocalLLM.suggestions) { opt in
+                ForEach(suggestions) { opt in
                     Button(opt.label) { text.wrappedValue = opt.tag }
                 }
             } label: {
@@ -272,6 +302,8 @@ struct SettingsView: View {
         draftModel = LocalLLM.draftModel
         refineModel = LocalLLM.refineModel
         baseURL = LocalLLM.baseURLString
+        whisperModel = WhisperConfig.model
+        whisperLanguage = WhisperConfig.languageSetting
         nameField = profile.name
     }
 
@@ -287,6 +319,9 @@ struct SettingsView: View {
         LocalLLM.refineModel = refineModel.trimmingCharacters(in: .whitespaces)
         let url = baseURL.trimmingCharacters(in: .whitespaces)
         LocalLLM.baseURLString = url.isEmpty ? LocalLLM.defaultBaseURL : url
+        let whisper = whisperModel.trimmingCharacters(in: .whitespaces)
+        WhisperConfig.model = whisper.isEmpty ? WhisperConfig.defaultModel : whisper
+        WhisperConfig.languageSetting = whisperLanguage
     }
 
     private func checkOllama() {

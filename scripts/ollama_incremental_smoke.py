@@ -36,10 +36,12 @@ Rules:
 - "offAgenda" holds only NEW tangents from this snippet; empty array if none."""
 
 def main():
+    # Mirrors fillAgendaIncremental: notes ride in the payload JSON only (the old
+    # duplicate "NOTES SO FAR" block was removed) and think=false skips gemma4's
+    # hidden chain-of-thought on the latency-critical live path.
     payload=json.dumps({"sections":SECTIONS},sort_keys=True)
-    notes="\n".join(f"[{s['id']}] {s['heading']}: {s['currentNotes']}" for s in SECTIONS if s['currentNotes'])
-    user=f"AGENDA SECTIONS (id, heading, current notes):\n{payload}\n\nNOTES SO FAR (for context; do not repeat unchanged):\n{notes}\n\nNEW TRANSCRIPT SNIPPET (integrate only this):\n{NEW_SNIPPET}"
-    body={"model":"gemma4:e2b","stream":False,"format":"json","messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"options":{"temperature":0.2,"num_ctx":8192}}
+    user=f"AGENDA SECTIONS (id, heading, current notes):\n{payload}\n\nNEW TRANSCRIPT SNIPPET (integrate only this):\n{NEW_SNIPPET}"
+    body={"model":"gemma4:e2b","stream":False,"format":"json","think":False,"messages":[{"role":"system","content":SYSTEM},{"role":"user","content":user}],"options":{"temperature":0.2,"num_ctx":8192}}
     req=urllib.request.Request(BASE+"/api/chat",data=json.dumps(body).encode(),headers={"content-type":"application/json"})
     t0=time.time()
     with urllib.request.urlopen(req,timeout=200) as r: content=json.loads(r.read())["message"]["content"]

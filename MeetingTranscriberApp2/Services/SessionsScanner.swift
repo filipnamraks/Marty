@@ -59,6 +59,8 @@ enum SessionsScanner {
             session.id,
             SummarySidecar.url(for: session.id),
             CleanedTranscriptSidecar.url(for: session.id),
+            // Per-session folder holding the kept utterance audio ({stamp}/audio).
+            session.id.deletingPathExtension(),
         ]
         var ok = true
         for url in candidates where FileManager.default.fileExists(atPath: url.path) {

@@ -30,3 +30,4 @@ Packages/
 # Real Google OAuth credentials. Copy GoogleSecrets.swift.example to
 # GoogleSecrets.swift and fill it in; the real file is never committed.
 MeetingTranscriberApp2/Services/GoogleSecrets.swift
+__pycache__/
