@@ -40,6 +40,11 @@ final class LiveTranscriber {
     var cleanedLines: [TranscriptLine]?
     var cleaningState: SummaryState = .idle
     var sessionContext: String = ""
+    /// Utterances flushed by the VAD but not yet transcribed. AgendaFiller only
+    /// fires an LLM fill when this is 0, so Ollama never grabs the GPU while
+    /// WhisperKit has work queued. Best-effort (incremented via a MainActor hop
+    /// from the VAD queue), which is fine — the gate is an optimization.
+    var pendingTranscriptions: Int = 0
 
     // Agenda-first flow (Phase 2). When non-nil, the UI renders AgendaDocumentView
     // and AgendaFiller drives periodic LLM fills against `lines`.
@@ -88,6 +93,7 @@ final class LiveTranscriber {
         summaryState = .idle
         cleanedLines = nil
         cleaningState = .idle
+        pendingTranscriptions = 0
 
         state = .loading
         statusMessage = "Loading WhisperKit…"
@@ -146,10 +152,12 @@ final class LiveTranscriber {
                 let (stream, continuation) = AsyncStream.makeStream(of: (String, URL, Date).self)
                 self.continuation = continuation
 
-                let micChunker = VADChunker(label: "You") { label, fileURL in
+                let micChunker = VADChunker(label: "You") { [weak self] label, fileURL in
+                    Task { @MainActor in self?.pendingTranscriptions += 1 }
                     continuation.yield((label, fileURL, Date()))
                 }
-                let sysChunker = VADChunker(label: "Them") { label, fileURL in
+                let sysChunker = VADChunker(label: "Them") { [weak self] label, fileURL in
+                    Task { @MainActor in self?.pendingTranscriptions += 1 }
                     continuation.yield((label, fileURL, Date()))
                 }
 
@@ -205,6 +213,9 @@ final class LiveTranscriber {
                         } catch {
                             // ignore individual errors
                         }
+                        // Decrement once per dequeued chunk — success or failure —
+                        // so the idle gate can't wedge shut.
+                        self.pendingTranscriptions = max(0, self.pendingTranscriptions - 1)
                         // Keep the source audio (it's the only copy of what was
                         // actually said) — kept even when transcription failed,
                         // since that's exactly the clip worth re-running later.
