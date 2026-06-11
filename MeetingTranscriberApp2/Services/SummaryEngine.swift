@@ -12,12 +12,13 @@ enum SummaryEngineError: LocalizedError {
     case transport(Error)
     case ollamaUnreachable
     case modelMissing(String)
+    case missingAPIKey
 
     var errorDescription: String? {
         switch self {
         case .emptyTranscript: return "Transcript is empty — nothing to summarize."
         case .http(let status, let msg):
-            return "Local model error \(status): \(msg)"
+            return "Model error \(status): \(msg)"
         case .decoding(let msg):
             return "Couldn't decode the model's response: \(msg)"
         case .transport(let error):
@@ -26,7 +27,93 @@ enum SummaryEngineError: LocalizedError {
             return "Ollama isn't running. Start it (`ollama serve`) and pull a model, then try again."
         case .modelMissing(let tag):
             return "Model not installed. Run: ollama pull \(tag)"
+        case .missingAPIKey:
+            return "No Anthropic API key set. Add one in Settings, or switch agenda fills to Local."
         }
+    }
+}
+
+// MARK: - Agenda fill engine abstraction
+
+enum AgendaFillMode: String { case draft, refined }
+
+struct AgendaFillResult {
+    var sections: [UUID: String]
+    var offAgenda: [String]
+}
+
+/// Anything that can fill an agenda from transcript text — the cloud
+/// AnthropicEngine or the local OllamaEngine. AgendaFiller talks to this,
+/// FillConfig decides which one it gets.
+protocol AgendaFillEngine {
+    func fillAgenda(agenda: Agenda, transcript: [TranscriptLine], mode: AgendaFillMode) async throws -> AgendaFillResult
+    func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine]) async throws -> AgendaFillResult
+}
+
+/// Which engine runs the live agenda fills, plus per-engine scheduling tuning.
+/// Cloud (Claude Haiku) is the default: it uses zero local GPU/RAM, so it never
+/// competes with WhisperKit on a 16 GB machine the way a resident 7 GB local
+/// model does. Local (Ollama) remains a fully offline option.
+enum FillEngineKind: String { case cloud, local }
+
+enum FillConfig {
+    private static let d = UserDefaults.standard
+    private static let engineKey = "Marty.fillEngine"
+
+    static var engine: FillEngineKind {
+        get { FillEngineKind(rawValue: d.string(forKey: engineKey) ?? "") ?? .cloud }
+        set { d.set(newValue.rawValue, forKey: engineKey) }
+    }
+
+    static func makeFillEngine() throws -> AgendaFillEngine {
+        switch engine {
+        case .cloud: return try AnthropicEngine.fromStorage()
+        case .local: return OllamaEngine.fromStorage()
+        }
+    }
+
+    /// Scheduling knobs for AgendaFiller, per engine.
+    struct Tuning {
+        let engine: FillEngineKind
+        /// Don't bother the model for fewer new lines than this.
+        let minNewLines: Int
+        /// Aim for one fill per this many seconds.
+        let targetInterval: TimeInterval
+        /// Cloud only: with WhisperKit busy, defer at most this long past the
+        /// target before firing anyway. nil = strict idle gate (local — firing
+        /// Ollama mid-Whisper-burst is the GPU collision this app fixed once).
+        let maxWait: TimeInterval?
+    }
+
+    static var tuning: Tuning {
+        switch engine {
+        case .cloud:
+            return Tuning(engine: .cloud, minNewLines: 2, targetInterval: 30, maxWait: 45)
+        case .local:
+            return Tuning(engine: .local, minNewLines: 6, targetInterval: 30, maxWait: nil)
+        }
+    }
+}
+
+/// Cloud (Anthropic) model configuration, stored in UserDefaults — the API key
+/// itself lives in the Keychain (SecureStorage.anthropicAPIKey).
+enum CloudLLM {
+    private static let d = UserDefaults.standard
+    private static let liveKey   = "Marty.cloudLiveModel"
+    private static let refineKey = "Marty.cloudRefineModel"
+
+    /// Live incremental fills: latency- and cost-sensitive, ~2 calls/minute.
+    static let defaultLiveModel = "claude-haiku-4-5"
+    /// Final refine pass: one quality-sensitive call per meeting.
+    static let defaultRefineModel = "claude-sonnet-4-6"
+
+    static var liveModel: String {
+        get { d.string(forKey: liveKey) ?? defaultLiveModel }
+        set { d.set(newValue, forKey: liveKey) }
+    }
+    static var refineModel: String {
+        get { d.string(forKey: refineKey) ?? defaultRefineModel }
+        set { d.set(newValue, forKey: refineKey) }
     }
 }
 

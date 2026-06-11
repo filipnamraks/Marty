@@ -7,6 +7,13 @@ import SwiftUI
 /// normal summary + cleanTranscript pipeline runs against the mock content.
 ///
 /// Triggered by View → Run Demo Session (⇧⌘D).
+///
+/// `useRealFills` (View → Run Demo Session (Real Fills), ⌥⇧⌘D) swaps the
+/// hardcoded draft/refined bullets for a real AgendaFiller driving the
+/// configured fill engine — the end-to-end test of the live fill pipeline
+/// without recording a meeting. The script appends to `t.lines` with
+/// `t.state == .running` and `pendingTranscriptions == 0`, so the filler runs
+/// exactly as it would live.
 @MainActor
 final class DemoSession {
 
@@ -34,9 +41,13 @@ final class DemoSession {
     private var mdHandle: FileHandle?
     private var startedAt: Date?
     private var seenSpeakers: Set<String> = []
+    /// Drive a real AgendaFiller (configured engine) instead of scripted bullets.
+    private let useRealFills: Bool
+    private var filler: AgendaFiller?
 
-    init(transcriber: LiveTranscriber) {
+    init(transcriber: LiveTranscriber, useRealFills: Bool = false) {
         self.transcriber = transcriber
+        self.useRealFills = useRealFills
     }
 
     // MARK: - Lifecycle
@@ -74,6 +85,11 @@ final class DemoSession {
         t.activityEvents.append(ActivityEvent(.sessionStarted))
 
         startElapsedTimer()
+        if useRealFills {
+            let realFiller = AgendaFiller(transcriber: t)
+            filler = realFiller
+            realFiller.start()
+        }
         replayTask = Task { [weak self] in await self?.replay() }
     }
 
@@ -92,6 +108,25 @@ final class DemoSession {
         t.state = .stopping
         t.statusMessage = "Stopping…"
         t.activityEvents.append(ActivityEvent(.sessionEnded))
+
+        if useRealFills {
+            // Real pipeline: stop the live ticks and run the authoritative
+            // refine pass — exactly what LiveTranscriber.stop() does.
+            let realFiller = filler
+            filler = nil
+            t.agendaFillState = .loading
+            Task { [weak t] in
+                guard let t else { return }
+                realFiller?.stop()
+                await realFiller?.finalize()
+                await MainActor.run {
+                    t.agendaFillState = .ready
+                    t.state = .idle
+                    t.statusMessage = "Ready when you are"
+                }
+            }
+            return
+        }
 
         // Settle the agenda into refined notes (the "After" state).
         if var agenda = t.agenda {
@@ -145,7 +180,11 @@ final class DemoSession {
         t.lines.append(entry)
         t.activityEvents.append(ActivityEvent(.utteranceSaved, detail: line.speaker))
 
-        updateAgendaFill(offset: line.meetingOffset)
+        // Real fills: AgendaFiller reads t.lines on its own clock; the scripted
+        // section statuses would just fight it.
+        if !useRealFills {
+            updateAgendaFill(offset: line.meetingOffset)
+        }
 
         // Append to .md with the synthetic timestamp.
         let f = DateFormatter()

@@ -59,6 +59,9 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .martyRunDemo)) { _ in
             runDemo()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .martyRunDemoRealFills)) { _ in
+            runDemo(realFills: true)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .martyTogglePalette)) { _ in
             showPalette.toggle()
         }
@@ -216,10 +219,12 @@ struct ContentView: View {
 
     /// Triggered by the View → Run Demo Session menu (⇧⌘D). Plays a scripted
     /// conversation through the live UI. No-op if a real session is running.
-    private func runDemo() {
+    /// `realFills` (⌥⇧⌘D) drives a real AgendaFiller against the configured
+    /// fill engine instead of the scripted bullets.
+    private func runDemo(realFills: Bool = false) {
         guard transcriber.state == .idle else { return }
         page = .live
-        let session = DemoSession(transcriber: transcriber)
+        let session = DemoSession(transcriber: transcriber, useRealFills: realFills)
         demo = session
         session.start()
     }
@@ -285,6 +290,9 @@ struct ContentView: View {
 extension Notification.Name {
     /// Posted by the View → Run Demo Session menu (⇧⌘D).
     static let martyRunDemo = Notification.Name("marty.runDemo")
+    /// Posted by View → Run Demo Session (Real Fills) (⌥⇧⌘D) — same script,
+    /// but a real AgendaFiller drives the configured fill engine.
+    static let martyRunDemoRealFills = Notification.Name("marty.runDemoRealFills")
     /// Posted by the ⌘K menu command — toggles the command palette.
     static let martyTogglePalette = Notification.Name("marty.togglePalette")
 }

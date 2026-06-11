@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Two-tier models: live drafts use a fast model (gemma4:e2b), the final polish
 /// and one-shot calls use a stronger one (gemma4:e4b).
-final class OllamaEngine: SummaryEngine {
+final class OllamaEngine: SummaryEngine, AgendaFillEngine {
     let baseURL: URL
     let draftModel: String
     let refineModel: String
@@ -93,127 +93,16 @@ final class OllamaEngine: SummaryEngine {
 
     // MARK: - Agenda fill (priority path)
 
-    enum FillMode: String { case draft, refined }
-
-    struct AgendaFillResult {
-        var sections: [UUID: String]
-        var offAgenda: [String]
-    }
-
-    /// A section's filled content. Normally a plain string, but defensively
-    /// tolerates a model that wraps it in a single-key object (observed with
-    /// gemma4:e4b) — we unwrap to the inner string so a quirk never throws.
-    struct SectionValue: Decodable {
-        let text: String
-        init(from decoder: Decoder) throws {
-            let c = try decoder.singleValueContainer()
-            if let s = try? c.decode(String.self) {
-                text = s
-            } else if let obj = try? c.decode([String: String].self), let first = obj.values.first {
-                text = first
-            } else {
-                text = ""
-            }
-        }
-    }
-
-    func fillAgenda(agenda: Agenda, transcript: [TranscriptLine], mode: FillMode) async throws -> AgendaFillResult {
+    func fillAgenda(agenda: Agenda, transcript: [TranscriptLine], mode: AgendaFillMode) async throws -> AgendaFillResult {
         guard !transcript.isEmpty else { throw SummaryEngineError.emptyTranscript }
 
-        let payload: [String: Any] = [
-            "title": agenda.title,
-            "sections": agenda.sections.map { s in
-                [
-                    "id": s.id.uuidString,
-                    "heading": s.heading,
-                    "subheading": s.subheading as Any,
-                    "originalBullets": s.originalBullets,
-                ] as [String: Any]
-            },
-        ]
-        let payloadJSON = String(
-            data: (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data(),
-            encoding: .utf8
-        ) ?? "{}"
-
-        let styleNote: String
-        switch mode {
-        case .draft:
-            styleNote = """
-            Write SHORT, factual bullets that capture only what was actually said. \
-            Each section's "content" is a markdown bullet list using "- " markers. \
-            If a section was not discussed yet, return "" (empty string). \
-            Be honest — do not invent. Match the user's voice (their originalBullets show their preferred style).
-            """
-        case .refined:
-            styleNote = """
-            Polish each section into a clean, readable summary. Use markdown bullets ("- "). \
-            Where the discussion produced concrete elements (proposal, risk, decision, owner, \
-            next step, deadline), label the bullet with a bold prefix like \
-            "- **Decision:** …" / "- **Owner:** …" / "- **Risk:** …" / "- **Next step:** …". \
-            If a section was not discussed, return the exact string "Not covered in this meeting." \
-            Do not invent — only include what's in the transcript.
-            """
-        }
-
-        // Two prompt details are load-bearing (verified against both models via
-        // scripts/ollama_engine_smoke.py):
-        //  1) a SINGLE generic key + "..." repeat-cue — a finite multi-key example
-        //     makes the small e2b model mirror the example's key count and drop
-        //     sections; the "..." makes it fill every id.
-        //  2) the value is described as a plain string ("never a nested object")
-        //     instead of an angle-bracket placeholder — e4b otherwise turned the
-        //     placeholder into a nested object key, breaking [String: String].
-        // SectionValue decoding below is the belt-and-suspenders for (2).
-        let system = """
-        You are Marty, an editorial meeting analyst. The user has an agenda; you are filling \
-        in each section based on what was actually discussed in the transcript.
-
-        Respond ONLY with a JSON object, no prose around it:
-        {
-          "sections": { "the-section-id": "markdown text for that section, as a plain string", ... },
-          "offAgenda": ["short bullet of a substantive discussion that didn't map to any heading", ...]
-        }
-
-        The "..." means: repeat for EVERY section id in the input. Each value in "sections" is a plain \
-        JSON string (markdown bullet lines separated by newlines) — never a nested object or array.
-
-        Rules:
-        - The keys in "sections" MUST exactly match the section ids provided in the input, and you \
-          MUST include EVERY id (even if the value is "").
-        - \(styleNote)
-        - "offAgenda" captures topics that consumed real meeting time but don't belong under \
-          any heading. Empty array if everything mapped.
-        - Never invent facts, decisions, or quotes not in the transcript.
-        """
-
-        let userMessage = """
-        AGENDA:
-        \(payloadJSON)
-
-        TRANSCRIPT:
-        \(Self.serialize(transcript))
-        """
-
+        // Prompts + parsing shared with AnthropicEngine — see AgendaFillPrompts
+        // for the (load-bearing) wording and the SectionValue defensive decode.
         let model = (mode == .draft) ? draftModel : refineModel
-        let text = try await chat(model: model, system: system, user: userMessage)
-
-        struct Response: Decodable {
-            let sections: [String: SectionValue]
-            let offAgenda: [String]?
-        }
-        let parsed: Response
-        do {
-            parsed = try JSONDecoder().decode(Response.self, from: Data(text.utf8))
-        } catch {
-            throw SummaryEngineError.decoding("agenda fill JSON: \(error.localizedDescription) — raw: \(text.prefix(200))")
-        }
-
-        var byId: [UUID: String] = [:]
-        for (key, value) in parsed.sections {
-            if let uuid = UUID(uuidString: key) { byId[uuid] = value.text }
-        }
-        return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
+        let text = try await chat(model: model,
+                                  system: AgendaFillPrompts.fullSystem(mode: mode),
+                                  user: AgendaFillPrompts.fullUser(agenda: agenda, transcript: transcript))
+        return try AgendaFillPrompts.parseFillResponse(text, dropEmpty: false, context: "agenda fill")
     }
 
     /// Incremental live update, append-only. Sends each section's CURRENT notes
@@ -227,80 +116,14 @@ final class OllamaEngine: SummaryEngine {
     func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine]) async throws -> AgendaFillResult {
         guard !newTranscript.isEmpty else { return AgendaFillResult(sections: [:], offAgenda: []) }
 
-        let sectionsPayload = agenda.sections.map { s -> [String: Any] in
-            [
-                "id": s.id.uuidString,
-                "heading": s.heading,
-                "subheading": s.subheading as Any,
-                "currentNotes": s.filledContent,   // what we've captured so far
-            ]
-        }
-        let payloadJSON = String(
-            data: (try? JSONSerialization.data(withJSONObject: ["sections": sectionsPayload], options: [.sortedKeys])) ?? Data(),
-            encoding: .utf8
-        ) ?? "{}"
-
-        // Load-bearing prompt detail (verified via scripts/ollama_incremental_smoke.py,
-        // 3/3 runs): the example value MUST show multiple "- " bullets joined by \n.
-        // With a prose placeholder ("the NEW bullet lines…"), e2b reproducibly
-        // returned only the snippet's LAST point; the multi-bullet shape makes it
-        // capture every point. Same lesson as fillAgenda: e2b mirrors example
-        // shapes far more reliably than it follows written rules.
-        let system = """
-        You are Marty, an editorial meeting analyst updating a meeting agenda LIVE as new \
-        transcript arrives. You are given each agenda section with its CURRENT notes, and a NEW \
-        snippet of transcript since the last update. Extract what the snippet ADDS.
-
-        Respond ONLY with a JSON object, no prose around it:
-        {
-          "sections": { "the-section-id": "- first new point\\n- second new point\\n- third new point", ... },
-          "offAgenda": ["a new tangent from the snippet that fit no heading", ...]
-        }
-
-        Rules:
-        - Return ONLY the sections the new snippet adds something to. OMIT every section the snippet \
-          doesn't change. (Most snippets touch one or two sections.)
-        - For a changed section, capture EVERY new fact, decision or next step from the snippet as \
-          its own "- " line — one bullet per spoken point, as many as the snippet contains. Do NOT \
-          repeat any point already in its currentNotes; the app appends what you return to the \
-          existing notes.
-        - Each value is a plain JSON string — never a nested object or array. The "..." means \
-          repeat for each CHANGED section only.
-        - Short, factual, only what was actually said. Never invent.
-        - "offAgenda" holds only NEW tangents from this snippet; empty array if none.
-        """
-
-        // Each section's current notes ride along in payloadJSON only — an earlier
-        // version repeated them in a separate "NOTES SO FAR" block, doubling the
-        // (growing) prefill on every call for no benefit.
-        let userMessage = """
-        AGENDA SECTIONS (id, heading, current notes):
-        \(payloadJSON)
-
-        NEW TRANSCRIPT SNIPPET (integrate only this):
-        \(Self.serialize(newTranscript))
-        """
-
-        let text = try await chat(model: draftModel, system: system, user: userMessage,
+        // Prompts + parsing shared with AnthropicEngine (AgendaFillPrompts). The
+        // multi-bullet example value in the system prompt is load-bearing for e2b.
+        let text = try await chat(model: draftModel,
+                                  system: AgendaFillPrompts.incrementalSystem,
+                                  user: AgendaFillPrompts.incrementalUser(agenda: agenda, newTranscript: newTranscript),
                                   think: false, numPredict: 256)
-
-        struct Response: Decodable {
-            let sections: [String: SectionValue]
-            let offAgenda: [String]?
-        }
-        let parsed: Response
-        do {
-            parsed = try JSONDecoder().decode(Response.self, from: Data(text.utf8))
-        } catch {
-            throw SummaryEngineError.decoding("incremental fill JSON: \(error.localizedDescription) — raw: \(text.prefix(200))")
-        }
-
-        var byId: [UUID: String] = [:]
-        for (key, value) in parsed.sections {
-            // Only accept ids that exist in the agenda; ignore empties (no change).
-            if let uuid = UUID(uuidString: key), !value.text.isEmpty { byId[uuid] = value.text }
-        }
-        return AgendaFillResult(sections: byId, offAgenda: parsed.offAgenda ?? [])
+        // dropEmpty: an empty value means "no change", not "clear the section".
+        return try AgendaFillPrompts.parseFillResponse(text, dropEmpty: true, context: "incremental fill")
     }
 
     // MARK: - Summary (legacy / past-session path)

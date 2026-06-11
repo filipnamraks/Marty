@@ -40,9 +40,10 @@ final class LiveTranscriber {
     var cleanedLines: [TranscriptLine]?
     var cleaningState: SummaryState = .idle
     var sessionContext: String = ""
-    /// Utterances flushed by the VAD but not yet transcribed. AgendaFiller only
-    /// fires an LLM fill when this is 0, so Ollama never grabs the GPU while
-    /// WhisperKit has work queued. Best-effort (incremented via a MainActor hop
+    /// Utterances flushed by the VAD but not yet transcribed. AgendaFiller uses
+    /// this as its WhisperKit-busy signal: local fills wait for 0 (strict GPU
+    /// gate), cloud fills merely defer briefly before firing anyway — see
+    /// AgendaFiller.shouldFill. Best-effort (incremented via a MainActor hop
     /// from the VAD queue), which is fine — the gate is an optimization.
     var pendingTranscriptions: Int = 0
 
@@ -116,13 +117,29 @@ final class LiveTranscriber {
                 let loadedEngine = try await WhisperKitEngine(model: WhisperConfig.model,
                                                               initialPrompt: prompt,
                                                               language: WhisperConfig.languageCode)
+                // Pay the one-time CoreML/ANE attach now, while the UI honestly
+                // says we're loading — not on the first real utterance, where it
+                // looked like the recorder was hung at 00:00.
+                self.statusMessage = "Preparing the speech model…"
+                await loadedEngine.warmup()
                 self.engine = loadedEngine
 
-                // Pre-warm the live draft model so its multi-second cold load
-                // happens now — not minutes in, on the first fill, where it
-                // visibly stuttered the machine. Fire-and-forget.
+                // Local engine only: pre-warm the live draft model so its
+                // multi-second cold load happens now — not minutes in, on the
+                // first fill, where it visibly stuttered the machine. With cloud
+                // fills there is nothing to warm — and skipping this keeps the
+                // ~7 GB local model out of memory for the entire meeting.
                 if self.agenda != nil {
-                    Task.detached { await OllamaEngine.fromStorage().prewarm() }
+                    switch FillConfig.engine {
+                    case .local:
+                        Task.detached { await OllamaEngine.fromStorage().prewarm() }
+                    case .cloud:
+                        // Preflight: surface a missing API key now, at record
+                        // start — not 30 seconds in, on the first failed fill.
+                        if (SecureStorage.read(SecureStorage.anthropicAPIKey) ?? "").isEmpty {
+                            self.agendaFillState = .error(SummaryEngineError.missingAPIKey.errorDescription ?? "No API key")
+                        }
+                    }
                 }
 
                 let transcriptsDir = SessionsScanner.transcriptsDir
