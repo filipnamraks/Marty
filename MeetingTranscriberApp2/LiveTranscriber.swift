@@ -52,6 +52,12 @@ final class LiveTranscriber {
     var agenda: Agenda?
     var agendaFillState: SummaryState = .idle
     private var agendaFiller: AgendaFiller?
+    /// Where the agenda document auto-saves (an .agenda.json sidecar derived
+    /// from this transcript URL). Attached when a session's transcript file is
+    /// created, detached when an unrelated agenda is loaded into the view
+    /// (e.g. a saved library meeting) so it can never clobber another
+    /// session's sidecar. nil → persistAgendaSidecar() is a no-op.
+    private var agendaPersistenceURL: URL?
 
     var speakerCount: Int {
         Set(lines.map(\.speaker)).count
@@ -154,6 +160,12 @@ final class LiveTranscriber {
                 try handle.write(contentsOf: Data("# Meeting transcript — \(header.string(from: Date()))\n\n".utf8))
                 self.mdHandle = handle
                 self.transcriptFileURL = url
+                // The agenda document auto-saves next to this transcript for
+                // the whole session (and after, for post-stop edits).
+                if self.agenda != nil {
+                    self.attachAgendaPersistence(to: url)
+                    self.persistAgendaSidecar()
+                }
 
                 let (stream, continuation) = AsyncStream.makeStream(of: (String, URL, Date).self)
                 self.continuation = continuation
@@ -371,6 +383,29 @@ final class LiveTranscriber {
     /// visible in the timeline, not just in os.Logger.
     func noteAgendaFillIssue(_ detail: String) {
         appendEvent(.info, detail: detail)
+    }
+
+    // MARK: - Agenda auto-save
+
+    /// Bind agenda auto-save to a session's transcript file. Called when a
+    /// live/demo session creates its transcript, or when a past session's
+    /// document is reopened (so edits keep persisting).
+    func attachAgendaPersistence(to transcriptURL: URL) {
+        agendaPersistenceURL = transcriptURL
+    }
+
+    /// Stop auto-saving — the agenda in the view no longer belongs to the
+    /// attached session (e.g. a saved library meeting was opened).
+    func detachAgendaPersistence() {
+        agendaPersistenceURL = nil
+    }
+
+    /// Write the current agenda to its session sidecar. Cheap (small atomic
+    /// JSON write) — called after every fill, the refine pass, and hand-edits,
+    /// so closing the app never loses the document.
+    func persistAgendaSidecar() {
+        guard let url = agendaPersistenceURL, let agenda else { return }
+        AgendaSidecar.save(agenda, for: url)
     }
 
     private func appendEvent(_ kind: ActivityEvent.Kind, detail: String? = nil) {

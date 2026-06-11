@@ -138,6 +138,7 @@ final class DemoSession {
             }
             t.agenda = agenda
             t.agendaFillState = .ready
+            t.persistAgendaSidecar()
         }
 
         Task { [weak t] in
@@ -250,6 +251,9 @@ final class DemoSession {
         try? handle.write(contentsOf: Data("# Meeting transcript — \(header.string(from: Date()))\n\n".utf8))
         self.mdHandle = handle
         t.transcriptFileURL = url
+        // Demo documents auto-save like real ones (mirrors LiveTranscriber.start()).
+        t.attachAgendaPersistence(to: url)
+        t.persistAgendaSidecar()
     }
 
     // MARK: - Demo agenda

@@ -5,6 +5,9 @@ import SwiftUI
 /// and every piece is click-to-edit. When refined you can add it to the library.
 struct AgendaDocumentView: View {
     @Bindable var transcriber: LiveTranscriber
+    /// Set when displaying a reopened past session — feeds the Transcript tab
+    /// (the live transcriber has no lines for a past session).
+    var pastSession: PastTranscript? = nil
     var onFinish: () -> Void
     var onExport: () -> Void = {}
     var onAddToLibrary: () -> Void = {}
@@ -151,7 +154,7 @@ struct AgendaDocumentView: View {
                 }
             }
         case .transcript:
-            PageSurface { TranscriptView(transcriber: transcriber, pastSession: nil) }
+            PageSurface { TranscriptView(transcriber: transcriber, pastSession: pastSession) }
         case .summary:
             PageSurface { SummaryView(transcriber: transcriber) }
         }
@@ -203,6 +206,9 @@ struct AgendaDocumentView: View {
               let idx = agenda.sections.firstIndex(where: { $0.id == id }) else { return }
         mutate(&agenda.sections[idx], value)
         transcriber.agenda = agenda
+        // Hand-edits persist too (no-op when this agenda has no session, e.g.
+        // a saved library meeting — those save through "Add to library").
+        transcriber.persistAgendaSidecar()
     }
 
     /// Curried helper so call sites read `updateSection(id) { section, newText in … }`.

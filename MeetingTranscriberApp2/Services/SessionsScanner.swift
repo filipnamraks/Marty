@@ -59,6 +59,7 @@ enum SessionsScanner {
             session.id,
             SummarySidecar.url(for: session.id),
             CleanedTranscriptSidecar.url(for: session.id),
+            AgendaSidecar.url(for: session.id),
             // Per-session folder holding the kept utterance audio ({stamp}/audio).
             session.id.deletingPathExtension(),
         ]
