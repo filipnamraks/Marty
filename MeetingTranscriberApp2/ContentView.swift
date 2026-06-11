@@ -90,6 +90,17 @@ struct ContentView: View {
                     transcriber.cleanedLines = nil
                     transcriber.cleaningState = .idle
                 }
+                // Restore the session's agenda document (auto-saved sidecar) so
+                // closing the app never loses it; re-attach persistence so
+                // further edits keep saving.
+                if let cachedAgenda = AgendaSidecar.load(for: session.id) {
+                    transcriber.agenda = cachedAgenda
+                    transcriber.agendaFillState = .ready
+                    transcriber.attachAgendaPersistence(to: session.id)
+                } else {
+                    transcriber.agenda = nil
+                    transcriber.detachAgendaPersistence()
+                }
             case .saved(let id):
                 openSavedMeeting(id)
             case .live:
@@ -163,6 +174,10 @@ struct ContentView: View {
             documentView
         } else if case .saved = page {
             documentView
+        } else if case .past = page, transcriber.agenda != nil {
+            // A past session whose agenda document was auto-saved reopens as
+            // the document, not the bare transcript.
+            documentView
         } else {
             pastSessionView
         }
@@ -171,6 +186,7 @@ struct ContentView: View {
     private var documentView: some View {
         AgendaDocumentView(
             transcriber: transcriber,
+            pastSession: loadedPast,
             onFinish: { if transcriber.state == .running { transcriber.stop() } },
             onExport: { showExport = true },
             onAddToLibrary: { showAddToLibrary = true }
@@ -269,6 +285,9 @@ struct ContentView: View {
         loadedPast = nil
         guard transcriber.state == .idle, let m = SavedLibraryStore.load(id: id) else { return }
         openedSaved = m
+        // A library meeting's agenda doesn't belong to any session on disk —
+        // never let it overwrite a session's auto-saved sidecar.
+        transcriber.detachAgendaPersistence()
         transcriber.agenda = m.agenda
         transcriber.agendaFillState = .ready   // a saved meeting always shows its finished actions
         if let lines = m.transcript {

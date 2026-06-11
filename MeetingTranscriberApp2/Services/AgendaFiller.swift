@@ -107,6 +107,8 @@ final class AgendaFiller {
                 t.agenda?.sections[i].isDraft = false
             }
         }
+        // The refined document is the deliverable — make sure it's on disk.
+        t.persistAgendaSidecar()
     }
 
     // MARK: - Private
@@ -207,7 +209,10 @@ final class AgendaFiller {
         // Off-agenda is incremental too: append new tangents to the parking lot.
         appendOffAgenda(result.offAgenda, into: &agenda, draft: true)
 
-        if t.state == .running { t.agenda = agenda }
+        if t.state == .running {
+            t.agenda = agenda
+            t.persistAgendaSidecar()
+        }
         return true
     }
 
