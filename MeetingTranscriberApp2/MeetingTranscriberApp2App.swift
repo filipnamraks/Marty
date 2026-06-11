@@ -20,6 +20,10 @@ struct MeetingTranscriberApp2App: App {
                     NotificationCenter.default.post(name: .martyRunDemo, object: nil)
                 }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("Run Demo Session (Real Fills)") {
+                    NotificationCenter.default.post(name: .martyRunDemoRealFills, object: nil)
+                }
+                .keyboardShortcut("d", modifiers: [.command, .shift, .option])
             }
         }
     }

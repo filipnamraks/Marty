@@ -13,12 +13,19 @@ struct SettingsView: View {
     @State private var whisperLanguage: String = WhisperConfig.languageSetting
     @State private var ollamaStatus: OllamaStatus = .idle
     @State private var nameField: String = ""
+    @State private var fillEngine: FillEngineKind = FillConfig.engine
+    @State private var apiKeyField: String = ""
+    @State private var keyStatus: KeyCheckStatus = .idle
     @Bindable private var profile: UserProfile = .shared
 
     enum OllamaStatus: Equatable {
         case idle, checking
         case ok(version: String, missing: [String])
         case unreachable
+    }
+
+    enum KeyCheckStatus: Equatable {
+        case idle, checking, valid, invalid, offline
     }
 
     var body: some View {
@@ -50,6 +57,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 profileSection
+                agendaFillSection
                 localModelSection
                 transcriptionSection
                 googleCalendarSection
@@ -75,10 +83,79 @@ struct SettingsView: View {
         }
     }
 
+    private var agendaFillSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fieldLabel("AGENDA FILLS")
+            Picker("", selection: $fillEngine) {
+                Text("Cloud (Claude)").tag(FillEngineKind.cloud)
+                Text("Local (Ollama)").tag(FillEngineKind.local)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+
+            if fillEngine == .cloud {
+                HStack(spacing: 10) {
+                    Text("API key")
+                        .font(.ui(12)).foregroundStyle(Theme.inkSoft)
+                        .frame(width: 84, alignment: .leading)
+                    SecureField("sk-ant-…", text: $apiKeyField)
+                        .textFieldStyle(.plain).font(.mono(12))
+                        .padding(8)
+                        .background(Theme.sidebar)
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                HStack(spacing: 12) {
+                    Button(action: checkAPIKey) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "key.horizontal").font(.system(size: 12))
+                            Text("Test key").font(.ui(12, weight: .medium))
+                        }
+                        .padding(.horizontal, 14).padding(.vertical, 7)
+                        .background(Theme.sidebar)
+                        .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
+                        .clipShape(Capsule())
+                        .foregroundStyle(Theme.ink)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(keyStatus == .checking || apiKeyField.trimmingCharacters(in: .whitespaces).isEmpty)
+                    keyBadge
+                }
+                caption("Live fills go to Claude (\(CloudLLM.defaultLiveModel)) — only transcript text is sent, never audio. Zero local GPU/RAM, so transcription never lags. Roughly $0.30–0.60 per meeting hour.")
+            } else {
+                caption("Live fills run fully on-device through Ollama. Heads-up: the local model holds ~7 GB of memory during the meeting and pauses while transcription is busy.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var keyBadge: some View {
+        switch keyStatus {
+        case .idle:
+            EmptyView()
+        case .checking:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                Text("Checking…").font(.mono(11)).foregroundStyle(Theme.inkMuted)
+            }
+        case .valid:
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
+                Text("Key valid").font(.mono(11)).foregroundStyle(Theme.accentDeep)
+            }
+        case .invalid:
+            Text("Invalid key — check it in the Anthropic console")
+                .font(.mono(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(2)
+        case .offline:
+            Text("Couldn't reach api.anthropic.com — offline?")
+                .font(.mono(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(2)
+        }
+    }
+
     private var localModelSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             fieldLabel("LOCAL MODEL (OLLAMA)")
-            caption("Marty runs entirely on-device through Ollama — no API key, no cloud. Install Ollama and pull the models below.")
+            caption("On-device models through Ollama — used when agenda fills are set to Local, and for post-meeting summaries and transcript cleanup. Install Ollama and pull the models below.")
 
             modelField(title: "Live draft", text: $draftModel)
             modelField(title: "Final polish", text: $refineModel)
@@ -305,6 +382,8 @@ struct SettingsView: View {
         whisperModel = WhisperConfig.model
         whisperLanguage = WhisperConfig.languageSetting
         nameField = profile.name
+        fillEngine = FillConfig.engine
+        apiKeyField = SecureStorage.read(SecureStorage.anthropicAPIKey) ?? ""
     }
 
     private func saveAndDismiss() {
@@ -322,6 +401,31 @@ struct SettingsView: View {
         let whisper = whisperModel.trimmingCharacters(in: .whitespaces)
         WhisperConfig.model = whisper.isEmpty ? WhisperConfig.defaultModel : whisper
         WhisperConfig.languageSetting = whisperLanguage
+        FillConfig.engine = fillEngine
+        // The key lives in the Keychain, never UserDefaults. Clearing the field
+        // deletes the item.
+        let key = apiKeyField.trimmingCharacters(in: .whitespacesAndNewlines)
+        if key.isEmpty {
+            SecureStorage.delete(SecureStorage.anthropicAPIKey)
+        } else {
+            SecureStorage.write(SecureStorage.anthropicAPIKey, value: key)
+        }
+    }
+
+    private func checkAPIKey() {
+        let key = apiKeyField.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        keyStatus = .checking
+        Task {
+            let status = await AnthropicEngine.checkKey(key)
+            await MainActor.run {
+                switch status {
+                case .valid: keyStatus = .valid
+                case .invalid: keyStatus = .invalid
+                case .offline: keyStatus = .offline
+                }
+            }
+        }
     }
 
     private func checkOllama() {
