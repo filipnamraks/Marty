@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -50,6 +51,7 @@ struct SettingsView: View {
                 transcriptionSection
                 googleCalendarSection
                 notionSection
+                diagnosticsSection
             }
             .padding(.horizontal, 28)
             .padding(.vertical, 22)
@@ -250,6 +252,75 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 caption("Optional — describe a meeting and Marty pulls its agenda.")
+            }
+        }
+    }
+
+    // MARK: Diagnostics (opt-in, metadata only)
+
+    @State private var diagnosticsEnabled: Bool = DiagnosticsStore.enabled
+    @State private var diagnosticsStatus: String? = nil
+
+    private var diagnosticsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            fieldLabel("DIAGNOSTICS")
+            Toggle(isOn: $diagnosticsEnabled) {
+                Text("Collect usage diagnostics").font(.ui(12.5)).foregroundStyle(Theme.ink)
+            }
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .onChange(of: diagnosticsEnabled) { _, newValue in
+                DiagnosticsStore.enabled = newValue
+            }
+            caption("Off by default. When on, Marty records how it behaved during meetings — fill timings, error counts, utterance statistics. Numbers only: never transcript text, headlines, or names. Nothing is ever sent anywhere; you export the file yourself and can read it before sharing.")
+
+            HStack(spacing: 12) {
+                Button(action: exportDiagnostics) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 12))
+                        Text("Export diagnostics…").font(.ui(12, weight: .medium))
+                    }
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(Theme.sidebar)
+                    .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
+                    .clipShape(Capsule())
+                    .foregroundStyle(Theme.ink)
+                }
+                .buttonStyle(.plain)
+                .disabled(DiagnosticsStore.shared.collectedMeetingCount == 0)
+
+                Button("Delete collected data") {
+                    DiagnosticsStore.shared.deleteAll()
+                    diagnosticsStatus = "Deleted."
+                }
+                .buttonStyle(.plain).font(.ui(11))
+                .foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24))
+                .disabled(DiagnosticsStore.shared.collectedMeetingCount == 0)
+
+                if let status = diagnosticsStatus {
+                    Text(status).font(.mono(11)).foregroundStyle(Theme.inkMuted)
+                } else {
+                    Text("\(DiagnosticsStore.shared.collectedMeetingCount) meeting\(DiagnosticsStore.shared.collectedMeetingCount == 1 ? "" : "s") collected")
+                        .font(.mono(11)).foregroundStyle(Theme.inkMuted)
+                }
+            }
+        }
+    }
+
+    private func exportDiagnostics() {
+        guard let data = DiagnosticsStore.shared.exportJSON() else {
+            diagnosticsStatus = "Nothing to export."
+            return
+        }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Marty-diagnostics.json"
+        panel.title = "Export Marty diagnostics"
+        if panel.runModal() == .OK, let url = panel.url {
+            do {
+                try data.write(to: url, options: [.atomic])
+                diagnosticsStatus = "Exported — open it to review before sharing."
+            } catch {
+                diagnosticsStatus = "Export failed: \(error.localizedDescription)"
             }
         }
     }
