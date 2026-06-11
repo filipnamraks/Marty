@@ -116,6 +116,11 @@ final class LiveTranscriber {
                 let loadedEngine = try await WhisperKitEngine(model: WhisperConfig.model,
                                                               initialPrompt: prompt,
                                                               language: WhisperConfig.languageCode)
+                // Pay the one-time CoreML/ANE attach now, while the UI honestly
+                // says we're loading — not on the first real utterance, where it
+                // looked like the recorder was hung at 00:00.
+                self.statusMessage = "Preparing the speech model…"
+                await loadedEngine.warmup()
                 self.engine = loadedEngine
 
                 // Pre-warm the live draft model so its multi-second cold load
