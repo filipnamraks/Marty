@@ -124,22 +124,11 @@ final class LiveTranscriber {
                 await loadedEngine.warmup()
                 self.engine = loadedEngine
 
-                // Local engine only: pre-warm the live draft model so its
-                // multi-second cold load happens now — not minutes in, on the
-                // first fill, where it visibly stuttered the machine. With cloud
-                // fills there is nothing to warm — and skipping this keeps the
-                // ~7 GB local model out of memory for the entire meeting.
-                if self.agenda != nil {
-                    switch FillConfig.engine {
-                    case .local:
-                        Task.detached { await OllamaEngine.fromStorage().prewarm() }
-                    case .cloud:
-                        // Preflight: surface a missing API key now, at record
-                        // start — not 30 seconds in, on the first failed fill.
-                        if (SecureStorage.read(SecureStorage.anthropicAPIKey) ?? "").isEmpty {
-                            self.agendaFillState = .error(SummaryEngineError.missingAPIKey.errorDescription ?? "No API key")
-                        }
-                    }
+                // Preflight: surface a missing API key now, at record start —
+                // not 30 seconds in, on the first failed fill.
+                if self.agenda != nil,
+                   (SecureStorage.read(SecureStorage.anthropicAPIKey) ?? "").isEmpty {
+                    self.agendaFillState = .error(SummaryEngineError.missingAPIKey.errorDescription ?? "No API key")
                 }
 
                 let transcriptsDir = SessionsScanner.transcriptsDir
@@ -324,7 +313,7 @@ final class LiveTranscriber {
         cleaningState = .loading
         appendEvent(.info, detail: "cleaning transcript")
         do {
-            let engine = OllamaEngine.fromStorage()
+            let engine = try AnthropicEngine.fromStorage()
             let cleaned = try await engine.cleanTranscript(transcript: lines)
             cleanedLines = cleaned
             cleaningState = .ready
@@ -342,9 +331,9 @@ final class LiveTranscriber {
     func generateSummary() async {
         guard !lines.isEmpty else { return }
         summaryState = .loading
-        appendEvent(.summaryUpdated, detail: "calling local model")
+        appendEvent(.summaryUpdated, detail: "calling Claude")
         do {
-            let engine = OllamaEngine.fromStorage()
+            let engine = try AnthropicEngine.fromStorage()
             let result = try await engine.summarize(transcript: lines)
             summary = result
             summaryState = .ready

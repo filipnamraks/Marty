@@ -1,10 +1,12 @@
 import Foundation
 
-/// The agenda-fill prompts and response parsing, shared verbatim by both fill
-/// engines (OllamaEngine and AnthropicEngine). The wording here is load-bearing
-/// and was tuned against the small local models (see the comments inline and
-/// scripts/ollama_*_smoke.py) — the cloud models tolerate it fine, so both
-/// engines speak the exact same contract and AgendaFiller can't tell them apart.
+/// The agenda-fill prompts and response parsing for AnthropicEngine, kept in
+/// one place so the live (incremental) and final (full) contracts stay visibly
+/// in sync, and so scripts/anthropic_incremental_smoke.py can mirror them.
+///
+/// The JSON envelope (single generic example key + "..." repeat-cue, plain
+/// string values) is inherited from the contract that survived two engine
+/// generations — it parses reliably and there's no reason to churn it.
 enum AgendaFillPrompts {
 
     // MARK: - Full fill (draft / refined)
@@ -14,14 +16,20 @@ enum AgendaFillPrompts {
         switch mode {
         case .draft:
             styleNote = """
-            Write SHORT, factual bullets that capture only what was actually said. \
+            Write factual bullets that capture what was actually said. \
             Each section's "content" is a markdown bullet list using "- " markers. \
+            Each bullet must stand alone — capture the what AND the why/outcome, with names and \
+            numbers, in roughly 10–25 words. \
             If a section was not discussed yet, return "" (empty string). \
             Be honest — do not invent. Match the user's voice (their originalBullets show their preferred style).
             """
         case .refined:
             styleNote = """
-            Polish each section into a clean, readable summary. Use markdown bullets ("- "). \
+            Polish each section into a clean, readable record of that part of the meeting. \
+            Use markdown bullets ("- "). Each bullet must STAND ALONE: someone who missed the \
+            meeting should fully understand the point from the bullet alone — capture the what \
+            AND the why/outcome, with names, numbers and reasons, in roughly 10–25 words. Never \
+            a bare fragment. \
             Where the discussion produced concrete elements (proposal, risk, decision, owner, \
             next step, deadline), label the bullet with a bold prefix like \
             "- **Decision:** …" / "- **Owner:** …" / "- **Risk:** …" / "- **Next step:** …". \
@@ -30,15 +38,6 @@ enum AgendaFillPrompts {
             """
         }
 
-        // Two prompt details are load-bearing (verified against both local models
-        // via scripts/ollama_engine_smoke.py):
-        //  1) a SINGLE generic key + "..." repeat-cue — a finite multi-key example
-        //     makes the small e2b model mirror the example's key count and drop
-        //     sections; the "..." makes it fill every id.
-        //  2) the value is described as a plain string ("never a nested object")
-        //     instead of an angle-bracket placeholder — e4b otherwise turned the
-        //     placeholder into a nested object key, breaking [String: String].
-        // SectionValue decoding in parseFillResponse is the belt-and-suspenders for (2).
         return """
         You are Marty, an editorial meeting analyst. The user has an agenda; you are filling \
         in each section based on what was actually discussed in the transcript.
@@ -56,6 +55,9 @@ enum AgendaFillPrompts {
         - The keys in "sections" MUST exactly match the section ids provided in the input, and you \
           MUST include EVERY id (even if the value is "").
         - \(styleNote)
+        - When content could fit more than one section, the user's prepared bullets \
+          ("originalBullets") define each section's intended angle — file it under the section \
+          whose prepared bullets it speaks to.
         - "offAgenda" captures topics that consumed real meeting time but don't belong under \
           any heading. Empty array if everything mapped.
         - Never invent facts, decisions, or quotes not in the transcript.
@@ -90,16 +92,15 @@ enum AgendaFillPrompts {
 
     // MARK: - Incremental fill (append-only live updates)
 
-    // Load-bearing prompt detail (verified via scripts/ollama_incremental_smoke.py,
-    // 3/3 runs): the example value MUST show multiple "- " bullets joined by \n.
-    // With a prose placeholder ("the NEW bullet lines…"), e2b reproducibly
-    // returned only the snippet's LAST point; the multi-bullet shape makes it
-    // capture every point. Same lesson as the full fill: e2b mirrors example
-    // shapes far more reliably than it follows written rules.
+    // The example value showing multiple "- " bullets joined by \n is kept on
+    // purpose: models mirror example shapes more reliably than written rules,
+    // and this shape is what makes multi-point snippets come back as multiple
+    // bullets instead of one.
     static let incrementalSystem = """
     You are Marty, an editorial meeting analyst updating a meeting agenda LIVE as new \
-    transcript arrives. You are given each agenda section with its CURRENT notes, and a NEW \
-    snippet of transcript since the last update. Extract what the snippet ADDS.
+    transcript arrives. You are given the agenda sections (each with the user's prepared \
+    bullets and its CURRENT notes), a few lines of RECENT CONTEXT that have already been \
+    processed, and a NEW snippet of transcript. Extract what the NEW snippet adds.
 
     Respond ONLY with a JSON object, no prose around it:
     {
@@ -107,26 +108,44 @@ enum AgendaFillPrompts {
       "offAgenda": ["a new tangent from the snippet that fit no heading", ...]
     }
 
-    Rules:
-    - Return ONLY the sections the new snippet adds something to. OMIT every section the snippet \
-      doesn't change. (Most snippets touch one or two sections.)
-    - For a changed section, capture EVERY new fact, decision or next step from the snippet as \
-      its own "- " line — one bullet per spoken point, as many as the snippet contains. Do NOT \
-      repeat any point already in its currentNotes; the app appends what you return to the \
-      existing notes.
+    Routing rules:
+    - Return ONLY the sections the new snippet adds something to. OMIT every section the \
+      snippet doesn't change. (Most snippets touch one or two sections.)
+    - Meetings usually move through the agenda roughly in order, and a speaker usually \
+      continues the most recently updated section until they clearly shift. Use the RECENT \
+      CONTEXT to tell whether the snippet continues the previous thought or starts a new one. \
+      A snippet CAN split across two sections when the speaker moves on mid-snippet.
+    - When content could fit more than one section, the user's prepared bullets \
+      ("originalBullets") define each section's intended angle — file it under the section \
+      whose prepared bullets it speaks to.
+    - "offAgenda" holds only NEW tangents from this snippet that genuinely fit no section; \
+      empty array if none.
+    - Do NOT extract anything from the RECENT CONTEXT lines — they are already filed; they \
+      exist only to show what the speaker was mid-way through.
+
+    Writing rules:
+    - Each bullet must STAND ALONE: someone who missed the meeting should fully understand \
+      the point from the bullet alone. Capture the what AND the why/outcome — names, numbers, \
+      reasons — in roughly 10–25 words. Never a bare fragment like "- used local models".
+    - Live speech arrives fragmented across lines; merge the fragments into complete points \
+      rather than echoing them line by line.
+    - One distinct spoken point per "- " line, as many lines as the snippet contains. Do NOT \
+      repeat any point already in a section's currentNotes; the app appends what you return \
+      to the existing notes.
     - Each value is a plain JSON string — never a nested object or array. The "..." means \
       repeat for each CHANGED section only.
-    - Short, factual, only what was actually said. Never invent.
-    - "offAgenda" holds only NEW tangents from this snippet; empty array if none.
+    - Only what was actually said. Never invent.
     """
 
-    static func incrementalUser(agenda: Agenda, newTranscript: [TranscriptLine]) -> String {
+    static func incrementalUser(agenda: Agenda, newTranscript: [TranscriptLine],
+                                contextLines: [TranscriptLine]) -> String {
         let sectionsPayload = agenda.sections.map { s -> [String: Any] in
             [
                 "id": s.id.uuidString,
                 "heading": s.heading,
                 "subheading": s.subheading as Any,
-                "currentNotes": s.filledContent,   // what we've captured so far
+                "originalBullets": s.originalBullets,  // the user's intended angle per section
+                "currentNotes": s.filledContent,       // what we've captured so far
             ]
         }
         let payloadJSON = String(
@@ -134,12 +153,18 @@ enum AgendaFillPrompts {
             encoding: .utf8
         ) ?? "{}"
 
-        // Each section's current notes ride along in payloadJSON only — an earlier
-        // version repeated them in a separate "NOTES SO FAR" block, doubling the
-        // (growing) prefill on every call for no benefit.
+        // The context block lets a snippet that starts mid-thought ("…and that's
+        // why it was slow") be routed by what preceded it, instead of cold.
+        let contextBlock = contextLines.isEmpty ? "" : """
+
+        RECENT CONTEXT (already filed — do not extract from this):
+        \(serialize(contextLines))
+        """
+
         return """
-        AGENDA SECTIONS (id, heading, current notes):
+        AGENDA SECTIONS (id, heading, prepared bullets, current notes):
         \(payloadJSON)
+        \(contextBlock)
 
         NEW TRANSCRIPT SNIPPET (integrate only this):
         \(serialize(newTranscript))
@@ -149,8 +174,8 @@ enum AgendaFillPrompts {
     // MARK: - Response parsing
 
     /// A section's filled content. Normally a plain string, but defensively
-    /// tolerates a model that wraps it in a single-key object (observed with
-    /// gemma4:e4b) — we unwrap to the inner string so a quirk never throws.
+    /// tolerates a model that wraps it in a single-key object — we unwrap to
+    /// the inner string so a quirk never throws.
     struct SectionValue: Decodable {
         let text: String
         init(from decoder: Decoder) throws {

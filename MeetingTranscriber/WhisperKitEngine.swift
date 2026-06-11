@@ -13,11 +13,12 @@ final class WhisperKitEngine: TranscriptionEngine {
     init(model: String = "openai_whisper-large-v3-v20240930",
          initialPrompt: String? = nil,
          language: String? = nil) async throws {
-        // Pin inference to ANE+CPU, off the Metal GPU. The live Ollama fills
-        // monopolize the GPU in bursts; on the default ("prefer ANE") options
-        // some configs still put the encoder on .cpuAndGPU, which made
-        // transcription queue behind LLM jobs and drop sentences. Explicit
-        // pinning guarantees the two engines run on different silicon.
+        // Pin inference to ANE+CPU, off the Metal GPU. On the default
+        // ("prefer ANE") options some configs still put the encoder on
+        // .cpuAndGPU, where transcription queued behind other GPU work and
+        // dropped sentences (originally local LLM fills). Explicit pinning
+        // keeps Whisper on dedicated silicon — and the ANE is the right home
+        // for it regardless: lower power, no contention with anything.
         let config = WhisperKitConfig(
             model: model,
             computeOptions: ModelComputeOptions(
