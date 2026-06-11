@@ -5,12 +5,10 @@ import Security
 // Anthropic API key and other small secrets locally.
 enum SecureStorage {
     static let anthropicAPIKey      = "com.filip.meetingtranscriber.anthropicApiKey"
-    static let preferredModel       = "com.filip.meetingtranscriber.preferredModel"
     static let googleRefreshToken   = "com.filip.meetingtranscriber.googleRefreshToken"
     static let googleAccountEmail   = "com.filip.meetingtranscriber.googleAccountEmail"
     static let notionToken          = "com.filip.meetingtranscriber.notionToken"
     static let notionWorkspaceName  = "com.filip.meetingtranscriber.notionWorkspaceName"
-    static let exaApiKey            = "com.filip.meetingtranscriber.exaApiKey"
 
     static func read(_ account: String) -> String? {
         let query: [String: Any] = [

@@ -1,11 +1,10 @@
 import Foundation
 
-/// The app's LLM engine, backed by the Anthropic API. Marty went local-only
-/// (Ollama) for a while, but live fills through a resident 7 GB local model
-/// starve a 16 GB machine that is simultaneously running WhisperKit and a
-/// video call — cloud fills cost zero local GPU/RAM, so transcription and
-/// intelligence can't collide no matter how busy the meeting is. Transcription
-/// itself stays fully on-device (WhisperKit); only text leaves the Mac.
+/// The app's LLM engine, backed by the Anthropic API. Cloud inference is a
+/// deliberate choice: an on-device LLM competes with WhisperKit and a video
+/// call for unified memory (tried and reverted). Transcription stays fully
+/// on-device (WhisperKit); only transcript TEXT ever leaves the Mac, and only
+/// to api.anthropic.com.
 ///
 /// Non-streaming on purpose: results are applied atomically after a full JSON
 /// parse, so streaming buys nothing.
