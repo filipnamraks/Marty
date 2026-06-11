@@ -94,7 +94,11 @@ final class AgendaFiller {
     /// Run one final, polished fill pass over the complete transcript.
     func finalize() async {
         guard let t = transcriber, var agenda = t.agenda, !t.lines.isEmpty else { return }
+        let t0 = Date()
         await runFill(agenda: &agenda, transcript: t.lines, mode: .refined)
+        DiagnosticsStore.shared.recordRefine(
+            latencyS: Date().timeIntervalSince(t0),
+            sectionsNotCovered: agenda.sections.filter { $0.filledContent == "Not covered in this meeting." }.count)
         t.agenda = agenda
         // Mark refined.
         for i in t.agenda?.sections.indices ?? 0..<0 {
@@ -138,13 +142,16 @@ final class AgendaFiller {
         let contextLines = Array(t.lines[contextStart..<lastProcessedLineCount])
 
         Self.log.info("fill attempt: chunk \(newLines.count) lines, backlog \(backlog), failures \(self.consecutiveFailures)")
+        DiagnosticsStore.shared.recordFillAttempt(backlogLines: backlog)
         let t0 = Date()
         if await runIncremental(newLines: newLines, contextLines: contextLines) {
             lastProcessedLineCount = chunkEnd
             consecutiveFailures = 0
+            DiagnosticsStore.shared.recordFillSuccess(latencyS: Date().timeIntervalSince(t0))
             Self.log.info("fill ok in \(Date().timeIntervalSince(t0), format: .fixed(precision: 1))s, cursor → \(chunkEnd)")
         } else {
             consecutiveFailures += 1
+            DiagnosticsStore.shared.recordFillFailure()
             Self.log.error("fill failed (\(self.consecutiveFailures)/\(Self.maxChunkFailures)) on lines \(self.lastProcessedLineCount)..<\(chunkEnd)")
             if consecutiveFailures >= Self.maxChunkFailures {
                 // Self-heal: skip the poison chunk so every fill after it can
@@ -152,6 +159,7 @@ final class AgendaFiller {
                 // these lines in the final document.
                 Self.log.error("skipping chunk after \(Self.maxChunkFailures) failures — lines \(self.lastProcessedLineCount)..<\(chunkEnd) deferred to finalize()")
                 transcriber?.noteAgendaFillIssue("live fill skipped \(chunkEnd - lastProcessedLineCount) lines after repeated errors — they'll appear in the final document")
+                DiagnosticsStore.shared.recordChunkSkipped(lines: chunkEnd - lastProcessedLineCount)
                 lastProcessedLineCount = chunkEnd
                 consecutiveFailures = 0
             }

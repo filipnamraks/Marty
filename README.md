@@ -33,6 +33,7 @@ Written out explicitly, because it matters:
 - **Optional, user-initiated:** exports to Google Drive or Notion send the document to your own accounts; fetching an agenda reads from your Calendar/Notion. These never happen unless you connected the service and clicked the action.
 - **Model download:** WhisperKit fetches the Whisper model from Hugging Face once, on first use.
 - **Nothing else.** No telemetry, no analytics, no crash reporting, no accounts, no third-party SDKs beyond WhisperKit and Apple's `swift-argument-parser`.
+- **Optional diagnostics (off by default):** Settings has a "Collect usage diagnostics" toggle. When enabled, Marty records *how it behaved* — fill timings, error counts, utterance statistics; numbers only, never any transcript text, headlines, or names. The data stays in a local file and is never transmitted; an "Export diagnostics" button produces a human-readable JSON you can inspect line by line and share by hand if you choose. A delete button removes everything collected.
 
 ## Project layout
 

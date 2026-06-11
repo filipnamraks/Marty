@@ -221,6 +221,8 @@ final class LiveTranscriber {
                                                                      speaker: label,
                                                                      text: trimmed))
                                     self.appendEvent(.utteranceSaved, detail: label)
+                                    DiagnosticsStore.shared.recordUtterance(
+                                        words: trimmed.split { $0.isWhitespace }.count)
                                     let formatter = DateFormatter()
                                     formatter.dateFormat = "HH:mm:ss"
                                     let line = "[\(formatter.string(from: timestamp))] [\(label)] \(trimmed)\n"
@@ -253,10 +255,12 @@ final class LiveTranscriber {
                 self.appendEvent(.sessionStarted)
 
                 // Kick off live agenda fill loop if an agenda is loaded.
-                if self.agenda != nil {
+                if let agenda = self.agenda {
                     let filler = AgendaFiller(transcriber: self)
                     self.agendaFiller = filler
                     filler.start()
+                    // Opt-in flight recorder (numbers only, see DiagnosticsStore).
+                    DiagnosticsStore.shared.beginMeeting(sections: agenda.sections.count)
                 }
             } catch {
                 self.state = .idle
@@ -298,7 +302,10 @@ final class LiveTranscriber {
                 Task {
                     filler.stop()
                     await filler.finalize()
-                    await MainActor.run { self.agendaFillState = .ready }
+                    await MainActor.run {
+                        self.agendaFillState = .ready
+                        DiagnosticsStore.shared.endMeeting()
+                    }
                 }
             } else {
                 Task { await self.generateSummary() }
