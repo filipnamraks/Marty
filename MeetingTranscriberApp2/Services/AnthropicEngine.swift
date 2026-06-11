@@ -76,16 +76,18 @@ final class AnthropicEngine: SummaryEngine {
     func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine],
                                contextLines: [TranscriptLine] = []) async throws -> AgendaFillResult {
         guard !newTranscript.isEmpty else { return AgendaFillResult(sections: [:], offAgenda: []) }
-        // max_tokens 1024 is generous headroom for a handful of 10–25-word
-        // bullets — a mid-JSON truncation would fail the decode.
+        // AgendaFiller caps the snippet at maxLinesPerFill, so 2048 tokens is
+        // ample headroom for the standalone bullets a bounded chunk can produce
+        // — a mid-JSON truncation would fail the decode (and chat() now names
+        // truncation explicitly via stop_reason).
         // 30s timeout: a live fill that takes longer than the fill interval is
-        // better retried with a bigger delta than waited on.
+        // better retried than waited on.
         let text = try await chat(model: liveModel,
                                   system: AgendaFillPrompts.incrementalSystem,
                                   user: AgendaFillPrompts.incrementalUser(agenda: agenda,
                                                                           newTranscript: newTranscript,
                                                                           contextLines: contextLines),
-                                  maxTokens: 1024, timeout: 30)
+                                  maxTokens: 2048, timeout: 30)
         return try AgendaFillPrompts.parseFillResponse(text, dropEmpty: true, context: "incremental fill")
     }
 
@@ -275,12 +277,21 @@ final class AnthropicEngine: SummaryEngine {
         }
 
         struct APIContent: Decodable { let type: String; let text: String? }
-        struct APIEnvelope: Decodable { let content: [APIContent] }
+        struct APIEnvelope: Decodable {
+            let content: [APIContent]
+            let stop_reason: String?
+        }
         let envelope: APIEnvelope
         do {
             envelope = try JSONDecoder().decode(APIEnvelope.self, from: data)
         } catch {
             throw SummaryEngineError.decoding("anthropic envelope: \(error.localizedDescription)")
+        }
+        // A response cut off by max_tokens is mid-JSON garbage downstream —
+        // name the failure instead of letting it surface as a mystery decode
+        // error. (Callers retry; AgendaFiller's bounded chunks make this rare.)
+        if envelope.stop_reason == "max_tokens" {
+            throw SummaryEngineError.decoding("response truncated at the \(maxTokens)-token cap (stop_reason: max_tokens)")
         }
         guard let text = envelope.content.first(where: { $0.type == "text" })?.text else {
             throw SummaryEngineError.decoding("no text content in response")

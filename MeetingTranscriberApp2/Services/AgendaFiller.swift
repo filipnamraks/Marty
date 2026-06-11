@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Keeps the meeting agenda filled from the live transcript, then runs one final
 /// polish pass on stop. Updates AgendaSection.filledContent + status on the
@@ -28,6 +29,10 @@ final class AgendaFiller {
     /// When the last fill was ATTEMPTED (not completed) — so a failing engine is
     /// retried at the normal cadence, not hammered on every 3s tick.
     private var lastFillAttemptAt = Date()
+    /// Consecutive failures of the CURRENT chunk (resets when the cursor moves).
+    private var consecutiveFailures = 0
+
+    private static let log = Logger(subsystem: "com.filip.meetingtranscriber", category: "agenda-fill")
 
     /// Don't bother the model for fewer new lines than this.
     static let minNewLines = 2
@@ -38,6 +43,16 @@ final class AgendaFiller {
     static let maxWait: TimeInterval = 45
     /// Already-processed lines re-sent as routing context (never re-extracted).
     static let contextLineCount = 3
+    /// Hard cap on lines per fill. Bounded input → bounded output, so a backlog
+    /// (from a failed fill or a burst of speech) can never grow a response past
+    /// the token budget — the compounding-failure loop that froze live fills:
+    /// fail → bigger delta → truncated JSON → fail → bigger still, forever.
+    /// A backlog larger than this drains chunk by chunk in catch-up mode.
+    static let maxLinesPerFill = 12
+    /// After this many consecutive failures of the SAME chunk, skip it and move
+    /// on — the lines are recovered by finalize(), which re-reads everything.
+    /// Live coverage of a poison chunk is worth less than every fill after it.
+    static let maxChunkFailures = 3
 
     init(transcriber: LiveTranscriber) {
         self.transcriber = transcriber
@@ -61,6 +76,10 @@ final class AgendaFiller {
     /// testable and the policy is readable in one place.
     static func shouldFill(elapsed: TimeInterval, newLines: Int, pending: Int) -> Bool {
         guard newLines >= minNewLines else { return false }
+        // Catch-up: a full chunk's worth of backlog drains on the 3s tick
+        // instead of waiting out the interval (one request in flight at a time
+        // regardless — the inFlight guard upstream serializes us).
+        if newLines >= maxLinesPerFill { return true }
         guard elapsed >= targetInterval else { return false }
         guard pending > 0 else { return true }   // WhisperKit idle → go
         return elapsed >= maxWait                // busy: defer, then hard-fire
@@ -104,17 +123,36 @@ final class AgendaFiller {
         inFlight = true
         lastFillAttemptAt = Date()
         defer { inFlight = false }
-        // Capture the delta now; advance the cursor only on SUCCESS — otherwise
-        // a transient engine error would permanently drop these lines from the
-        // live agenda (only finalize() would ever see them again).
-        let newLines = Array(t.lines[lastProcessedLineCount..<total])
+        // Take the OLDEST chunk of the backlog, capped at maxLinesPerFill, and
+        // advance the cursor only past what this attempt actually covered —
+        // on SUCCESS, so a transient engine error doesn't drop lines from the
+        // live agenda (finalize() would be the only one to ever see them).
+        let backlog = total - lastProcessedLineCount
+        let chunkEnd = min(total, lastProcessedLineCount + Self.maxLinesPerFill)
+        let newLines = Array(t.lines[lastProcessedLineCount..<chunkEnd])
         // A few already-processed lines ride along as routing context, so a
         // snippet that opens mid-thought is filed by what preceded it.
         let contextStart = max(0, lastProcessedLineCount - Self.contextLineCount)
         let contextLines = Array(t.lines[contextStart..<lastProcessedLineCount])
 
+        Self.log.info("fill attempt: chunk \(newLines.count) lines, backlog \(backlog), failures \(self.consecutiveFailures)")
+        let t0 = Date()
         if await runIncremental(newLines: newLines, contextLines: contextLines) {
-            lastProcessedLineCount = total
+            lastProcessedLineCount = chunkEnd
+            consecutiveFailures = 0
+            Self.log.info("fill ok in \(Date().timeIntervalSince(t0), format: .fixed(precision: 1))s, cursor → \(chunkEnd)")
+        } else {
+            consecutiveFailures += 1
+            Self.log.error("fill failed (\(self.consecutiveFailures)/\(Self.maxChunkFailures)) on lines \(self.lastProcessedLineCount)..<\(chunkEnd)")
+            if consecutiveFailures >= Self.maxChunkFailures {
+                // Self-heal: skip the poison chunk so every fill after it can
+                // succeed. finalize() re-reads the full transcript and recovers
+                // these lines in the final document.
+                Self.log.error("skipping chunk after \(Self.maxChunkFailures) failures — lines \(self.lastProcessedLineCount)..<\(chunkEnd) deferred to finalize()")
+                transcriber?.noteAgendaFillIssue("live fill skipped \(chunkEnd - lastProcessedLineCount) lines after repeated errors — they'll appear in the final document")
+                lastProcessedLineCount = chunkEnd
+                consecutiveFailures = 0
+            }
         }
     }
 
@@ -130,7 +168,10 @@ final class AgendaFiller {
             result = try await engine.fillAgendaIncremental(agenda: snapshot, newTranscript: newLines,
                                                             contextLines: contextLines)
         } catch {
-            transcriber?.agendaFillState = .error((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            Self.log.error("incremental fill error: \(message)")
+            transcriber?.agendaFillState = .error(message)
+            transcriber?.noteAgendaFillIssue("agenda fill failed — retrying (\(message))")
             return false
         }
         transcriber?.agendaFillState = .ready
