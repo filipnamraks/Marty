@@ -7,7 +7,10 @@ update only that section, append-only, values plain strings, and every bullet
 must be a standalone point (no 4-word fragments).
 Case 2 (incremental straddle, claude-haiku-4-5): a snippet that finishes one
 topic and starts the next must SPLIT across both sections.
-Case 3 (refined full fill, claude-sonnet-4-6): every section id present,
+Case 3 (big chunk, claude-haiku-4-5): a dense 12-line snippet — the
+AgendaFiller.maxLinesPerFill worst case — must come back as valid JSON well
+inside the 2048-token cap (stop_reason must not be max_tokens).
+Case 4 (refined full fill, claude-sonnet-4-6): every section id present,
 undiscussed sections get the exact "Not covered in this meeting." string.
 
 Usage: ANTHROPIC_API_KEY=sk-ant-... python3 scripts/anthropic_incremental_smoke.py
@@ -149,7 +152,7 @@ def call(model, system, user, max_tokens):
     with urllib.request.urlopen(req, timeout=120) as r:
         env = json.loads(r.read())
     text = next(c["text"] for c in env["content"] if c["type"] == "text")
-    return strip_fences(text), time.time() - t0
+    return strip_fences(text), time.time() - t0, env.get("stop_reason")
 
 
 def incremental_user(context, snippet):
@@ -171,7 +174,7 @@ def depth_ok(secs):
 
 
 def case_single_topic():
-    text, dt = call(LIVE_MODEL, INCREMENTAL_SYSTEM, incremental_user(CONTEXT_LINES, NEW_SNIPPET), 1024)
+    text, dt, _ = call(LIVE_MODEL, INCREMENTAL_SYSTEM, incremental_user(CONTEXT_LINES, NEW_SNIPPET), 2048)
     secs = json.loads(text).get("sections", {})
     changed = set(secs.keys())
     nonstr = [k for k, v in secs.items() if not isinstance(v, str)]
@@ -188,7 +191,7 @@ def case_single_topic():
 
 
 def case_straddle():
-    text, dt = call(LIVE_MODEL, INCREMENTAL_SYSTEM, incremental_user(STRADDLE_CONTEXT, STRADDLE_SNIPPET), 1024)
+    text, dt, _ = call(LIVE_MODEL, INCREMENTAL_SYSTEM, incremental_user(STRADDLE_CONTEXT, STRADDLE_SNIPPET), 2048)
     secs = json.loads(text).get("sections", {})
     changed = set(secs.keys())
     deep, short = depth_ok(secs)
@@ -204,12 +207,45 @@ def case_straddle():
     return changed == {M, O} and retention_in_metrics and design_in_onboarding and deep
 
 
+
+# Worst case AgendaFiller can send: maxLinesPerFill dense lines spanning topics.
+BIG_CONTEXT = """[10:02:00] [You] Let me run through everything quickly.
+[10:02:04] [Them] Go ahead."""
+BIG_SNIPPET = "\n".join([
+    "[10:02:10] [You] Activation held at thirty-eight percent this week, so the checklist gains are sticking.",
+    "[10:02:16] [Them] Week-four retention recovered one point to sixty-two percent after the email nudges.",
+    "[10:02:22] [You] Free-tier churn is still our biggest leak, about nine percent monthly.",
+    "[10:02:28] [Them] On onboarding v2, the design team locked the final flows yesterday afternoon.",
+    "[10:02:34] [You] Engineering committed to two sprints, shipping behind a feature flag.",
+    "[10:02:40] [Them] We will gate it to ten percent of new signups and compare activation curves.",
+    "[10:02:46] [You] If the gated cohort beats control by two points we roll out to everyone.",
+    "[10:02:52] [Them] Support volume should drop too since v2 removes the manual import step.",
+    "[10:02:58] [You] On pricing, the annual discount test finally has enough volume to read.",
+    "[10:03:04] [Them] Annual plans took eighteen percent of new purchases at the twenty percent discount.",
+    "[10:03:10] [You] Margin impact is acceptable, finance signed off this morning.",
+    "[10:03:16] [Them] So the proposal is to make the annual toggle default-on next month.",
+])
+
+
+def case_big_chunk():
+    text, dt, stop = call(LIVE_MODEL, INCREMENTAL_SYSTEM, incremental_user(BIG_CONTEXT, BIG_SNIPPET), 2048)
+    secs = json.loads(text).get("sections", {})
+    deep, short = depth_ok(secs)
+    not_truncated = stop != "max_tokens"
+    covers_all = {M, O, P} <= set(secs.keys())
+    print(f"[big-chunk/{LIVE_MODEL}] latency {dt:.1f}s, returned ids: {len(secs)}, stop_reason: {stop}")
+    print(f"  not truncated at 2048: {not_truncated}")
+    print(f"  all three sections updated: {covers_all}")
+    print(f"  every bullet standalone: {deep}" + (f" — short: {short}" if short else ""))
+    return not_truncated and covers_all and deep
+
+
 def case_refined():
     payload = json.dumps({"title": "Weekly product sync", "sections": [
         {"id": s["id"], "heading": s["heading"], "subheading": s["subheading"],
          "originalBullets": s["originalBullets"]} for s in SECTIONS]}, sort_keys=True)
     user = f"AGENDA:\n{payload}\n\nTRANSCRIPT:\n{FULL_TRANSCRIPT}"
-    text, dt = call(REFINE_MODEL, FULL_SYSTEM, user, 8192)
+    text, dt, _ = call(REFINE_MODEL, FULL_SYSTEM, user, 8192)
     secs = json.loads(text).get("sections", {})
     all_ids = {M, O, P} <= set(secs.keys())
     nonstr = [k for k, v in secs.items() if not isinstance(v, str)]
@@ -226,7 +262,7 @@ def case_refined():
 def main():
     if not KEY:
         print("Set ANTHROPIC_API_KEY first."); sys.exit(2)
-    ok = [case_single_topic(), case_straddle(), case_refined()]
+    ok = [case_single_topic(), case_straddle(), case_big_chunk(), case_refined()]
     print("RESULT:", "PASS" if all(ok) else "CHECK", ok)
     sys.exit(0 if all(ok) else 1)
 

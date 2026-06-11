@@ -367,6 +367,12 @@ final class LiveTranscriber {
         engine?.initialPrompt = parts.isEmpty ? nil : parts.joined(separator: ". ")
     }
 
+    /// AgendaFiller's hook into the activity feed — fill problems should be
+    /// visible in the timeline, not just in os.Logger.
+    func noteAgendaFillIssue(_ detail: String) {
+        appendEvent(.info, detail: detail)
+    }
+
     private func appendEvent(_ kind: ActivityEvent.Kind, detail: String? = nil) {
         activityEvents.append(ActivityEvent(kind, detail: detail))
         if activityEvents.count > 50 {

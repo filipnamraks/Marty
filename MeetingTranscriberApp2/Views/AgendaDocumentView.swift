@@ -86,6 +86,7 @@ struct AgendaDocumentView: View {
     private var actions: some View {
         if isRecording {
             HStack(spacing: 10) {
+                fillIssueChip
                 RecordingPill(elapsed: formatElapsed(transcriber.elapsedSeconds))
                 barButton("Finish & refine", filled: false, action: onFinish)
             }
@@ -97,6 +98,26 @@ struct AgendaDocumentView: View {
             }
         } else {
             Text("Refining…").font(.mono(11)).foregroundStyle(Theme.D.sub)
+        }
+    }
+
+    /// A stalled live fill must never be silent: while recording, surface the
+    /// fill error inline (it clears itself on the next successful fill, which
+    /// sets agendaFillState back to .ready). Full message in the tooltip.
+    @ViewBuilder
+    private var fillIssueChip: some View {
+        if case .error(let message) = transcriber.agendaFillState {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 10))
+                Text("Live fill issue — retrying")
+                    .font(.mono(10))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(Color(red: 0.82, green: 0.45, blue: 0.36))
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(Capsule().fill(Color(red: 0.82, green: 0.45, blue: 0.36).opacity(0.12)))
+            .help(message)
         }
     }
 
