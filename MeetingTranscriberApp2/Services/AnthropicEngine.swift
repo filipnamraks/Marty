@@ -1,19 +1,19 @@
 import Foundation
 
-/// Cloud LLM engine backed by the Anthropic API. Resurrected (and slimmed) from
-/// the original cloud engine this app shipped with before the all-local Ollama
-/// era — brought back because live agenda fills through a resident 7 GB local
-/// model starve a 16 GB machine that is simultaneously running WhisperKit and a
-/// video call. Cloud fills cost zero local GPU/RAM, so transcription and fills
-/// can't collide no matter how busy the meeting is.
+/// The app's LLM engine, backed by the Anthropic API. Marty went local-only
+/// (Ollama) for a while, but live fills through a resident 7 GB local model
+/// starve a 16 GB machine that is simultaneously running WhisperKit and a
+/// video call — cloud fills cost zero local GPU/RAM, so transcription and
+/// intelligence can't collide no matter how busy the meeting is. Transcription
+/// itself stays fully on-device (WhisperKit); only text leaves the Mac.
 ///
-/// Same prompts and JSON contract as OllamaEngine (shared via AgendaFillPrompts);
-/// only the transport differs. Non-streaming on purpose: fills are applied
-/// atomically after a full JSON parse, so streaming buys nothing.
+/// Non-streaming on purpose: results are applied atomically after a full JSON
+/// parse, so streaming buys nothing.
 ///
-/// Two-tier models, mirroring the local engine: live fills use a fast model
-/// (Claude Haiku), the final refine pass uses a stronger one (Claude Sonnet).
-final class AnthropicEngine: SummaryEngine, AgendaFillEngine {
+/// Two-tier models: live fills use a fast model (Claude Haiku), the final
+/// refine pass and post-meeting summary/cleanup use a stronger one (Claude
+/// Sonnet).
+final class AnthropicEngine: SummaryEngine {
     private let apiKey: String
     let liveModel: String
     let refineModel: String
@@ -70,17 +70,72 @@ final class AnthropicEngine: SummaryEngine, AgendaFillEngine {
         return try AgendaFillPrompts.parseFillResponse(text, dropEmpty: false, context: "agenda fill")
     }
 
-    func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine]) async throws -> AgendaFillResult {
+    /// `contextLines`: the last few ALREADY-PROCESSED transcript lines, sent as
+    /// marked context so a snippet that starts mid-thought can be routed by
+    /// what preceded it (see AgendaFillPrompts.incrementalUser).
+    func fillAgendaIncremental(agenda: Agenda, newTranscript: [TranscriptLine],
+                               contextLines: [TranscriptLine] = []) async throws -> AgendaFillResult {
         guard !newTranscript.isEmpty else { return AgendaFillResult(sections: [:], offAgenda: []) }
-        // max_tokens 1024 is the cloud analog of the local path's num_predict 256
-        // — generous headroom, because a mid-JSON truncation fails the decode.
+        // max_tokens 1024 is generous headroom for a handful of 10–25-word
+        // bullets — a mid-JSON truncation would fail the decode.
         // 30s timeout: a live fill that takes longer than the fill interval is
         // better retried with a bigger delta than waited on.
         let text = try await chat(model: liveModel,
                                   system: AgendaFillPrompts.incrementalSystem,
-                                  user: AgendaFillPrompts.incrementalUser(agenda: agenda, newTranscript: newTranscript),
+                                  user: AgendaFillPrompts.incrementalUser(agenda: agenda,
+                                                                          newTranscript: newTranscript,
+                                                                          contextLines: contextLines),
                                   maxTokens: 1024, timeout: 30)
         return try AgendaFillPrompts.parseFillResponse(text, dropEmpty: true, context: "incremental fill")
+    }
+
+    // MARK: - Export routing
+
+    struct ExportRouting: Decodable { let folder: String?; let filename: String? }
+
+    /// Interpret a user's free-text export instruction into folder + filename.
+    func routeExport(instruction: String, defaultFolder: String, defaultFilename: String) async throws -> ExportRouting {
+        let trimmed = instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return ExportRouting(folder: defaultFolder, filename: defaultFilename)
+        }
+        let system = """
+        You are a routing helper. The user is exporting a meeting transcript and gave a \
+        natural-language instruction about where it should go. Respond ONLY with a JSON object:
+        { "folder": "folder name they implied, or the default", "filename": "filename (no extension) they implied, or the default" }
+        Rules: single folder name, no slashes; filename human-readable, no .md, no slashes, no quotes; \
+        return the default for any field they didn't mention.
+        """
+        let payload: [String: String] = [
+            "instruction": trimmed, "default_folder": defaultFolder, "default_filename": defaultFilename,
+        ]
+        let payloadJSON = String(data: (try? JSONEncoder().encode(payload)) ?? Data(), encoding: .utf8) ?? "{}"
+        let text = try await chat(model: liveModel, system: system, user: payloadJSON,
+                                  maxTokens: 256, timeout: 30)
+        do {
+            return try JSONDecoder().decode(ExportRouting.self, from: Data(text.utf8))
+        } catch {
+            return ExportRouting(folder: defaultFolder, filename: defaultFilename)
+        }
+    }
+
+    // MARK: - Agenda candidate picker (NL intake)
+
+    func pickAgendaCandidate(intent: String, candidatesJSON: String) async throws -> String {
+        let system = """
+        You are an agenda picker. The user typed a one-line instruction describing the meeting they're \
+        about to have. You're given candidate items (calendar events or Notion pages). Pick the single \
+        best match. Respond ONLY with a JSON object: { "id": "<the chosen candidate id, exactly as given>" }
+        Rules:
+        - Prefer candidates whose title closely matches the user's intent.
+        - When the intent mentions a time, prefer the calendar event closest to that time (use "when").
+        - Always return one of the provided ids verbatim, including the source prefix (e.g. "calendar:abc123").
+        """
+        let user = "intent: \(intent)\ncandidates: \(candidatesJSON)"
+        let text = try await chat(model: liveModel, system: system, user: user,
+                                  maxTokens: 256, timeout: 30)
+        struct Pick: Decodable { let id: String }
+        return try JSONDecoder().decode(Pick.self, from: Data(text.utf8)).id
     }
 
     // MARK: - Summary / cleanup (SummaryEngine conformance, post-meeting paths)
@@ -184,8 +239,8 @@ final class AnthropicEngine: SummaryEngine, AgendaFillEngine {
     // MARK: - Core HTTP
 
     /// POST /v1/messages (non-streaming), returns the first text block with any
-    /// markdown fences stripped. Unlike Ollama there is no `format: "json"`
-    /// constraint, so stripFences + the tolerant SectionValue decode in
+    /// markdown fences stripped. There is no server-side JSON constraint on
+    /// this path, so stripFences + the tolerant SectionValue decode in
     /// AgendaFillPrompts carry the JSON contract.
     private func chat(model: String, system: String, user: String,
                       maxTokens: Int, timeout: TimeInterval) async throws -> String {

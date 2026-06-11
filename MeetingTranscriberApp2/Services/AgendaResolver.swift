@@ -104,12 +104,12 @@ final class AgendaResolver {
         ) ?? "{}"
 
         do {
-            let id = try await OllamaEngine.fromStorage()
+            let id = try await AnthropicEngine.fromStorage()
                 .pickAgendaCandidate(intent: intent, candidatesJSON: candidatesJSON)
             // Guard against a hallucinated id — fall back to the top-scored candidate.
             return candidates.contains { $0.compositeId == id } ? id : candidates[0].compositeId
         } catch {
-            // Local model unavailable → don't fail intake; take the best fuzzy match.
+            // Model unavailable (offline / no key) → don't fail intake; take the best fuzzy match.
             return candidates[0].compositeId
         }
     }

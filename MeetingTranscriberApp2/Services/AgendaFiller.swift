@@ -10,17 +10,13 @@ import Foundation
 /// re-reads the whole transcript or rewrites whole sections. That keeps each
 /// pass small and bounded no matter how long the meeting runs.
 ///
-/// SCHEDULING is time-based (~one fill per `targetInterval` when new content
-/// exists), with WhisperKit-awareness that differs by engine:
-///  - cloud (default): if WhisperKit has queued utterances, defer briefly — but
-///    HARD-FIRE once `maxWait` has elapsed. A cloud fill uses zero local GPU, so
-///    there's nothing to collide with; the defer is only politeness to the
-///    MainActor. This is what guarantees fills can't starve in a continuous
-///    two-stream conversation (the failure mode of the old idle gate, where
-///    `pendingTranscriptions` rarely hit 0 and the agenda stayed empty).
-///  - local: strict idle gate, unchanged. Firing Ollama mid-Whisper-burst is the
-///    GPU collision that drops sentences; finalize() remains the backstop for a
-///    meeting that never pauses.
+/// SCHEDULING is time-based: ~one fill per `targetInterval` when new content
+/// exists. If WhisperKit has queued utterances the fill defers briefly — but
+/// HARD-FIRES once `maxWait` has elapsed. A cloud fill uses zero local GPU, so
+/// there's nothing to collide with; the defer is only politeness to the
+/// MainActor. The hard-fire is what guarantees fills can't starve in a
+/// continuous two-stream conversation (the failure mode of the old idle gate,
+/// where `pendingTranscriptions` rarely hit 0 and the agenda stayed empty).
 /// The one full re-read happens in finalize() on stop — that authoritative pass
 /// dedupes and rewrites properly.
 @MainActor
@@ -33,6 +29,16 @@ final class AgendaFiller {
     /// retried at the normal cadence, not hammered on every 3s tick.
     private var lastFillAttemptAt = Date()
 
+    /// Don't bother the model for fewer new lines than this.
+    static let minNewLines = 2
+    /// Aim for one fill per this many seconds.
+    static let targetInterval: TimeInterval = 30
+    /// With WhisperKit busy, defer at most this long past the target before
+    /// firing anyway — the starvation ceiling.
+    static let maxWait: TimeInterval = 45
+    /// Already-processed lines re-sent as routing context (never re-extracted).
+    static let contextLineCount = 3
+
     init(transcriber: LiveTranscriber) {
         self.transcriber = transcriber
     }
@@ -42,7 +48,7 @@ final class AgendaFiller {
         guard tickTask == nil else { return }
         // Seed the clock partially elapsed so the first fill lands ~halfway into
         // the first interval — early enough that the document visibly comes alive.
-        lastFillAttemptAt = Date().addingTimeInterval(-FillConfig.tuning.targetInterval / 2)
+        lastFillAttemptAt = Date().addingTimeInterval(-Self.targetInterval / 2)
         tickTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 3 * 1_000_000_000)
@@ -53,13 +59,11 @@ final class AgendaFiller {
 
     /// The go/no-go decision for one tick, as a pure function so it's trivially
     /// testable and the policy is readable in one place.
-    static func shouldFill(elapsed: TimeInterval, newLines: Int, pending: Int,
-                           tuning: FillConfig.Tuning) -> Bool {
-        guard newLines >= tuning.minNewLines else { return false }
-        guard elapsed >= tuning.targetInterval else { return false }
-        guard pending > 0 else { return true }          // WhisperKit idle → go
-        guard let maxWait = tuning.maxWait else { return false }  // local: strict gate
-        return elapsed >= maxWait                        // cloud: defer, then hard-fire
+    static func shouldFill(elapsed: TimeInterval, newLines: Int, pending: Int) -> Bool {
+        guard newLines >= minNewLines else { return false }
+        guard elapsed >= targetInterval else { return false }
+        guard pending > 0 else { return true }   // WhisperKit idle → go
+        return elapsed >= maxWait                // busy: defer, then hard-fire
     }
 
     /// Stop periodic fills. Does not run the final pass — call `finalize()` for that.
@@ -93,11 +97,9 @@ final class AgendaFiller {
         guard t.state == .running else { return }
         guard !inFlight else { return }
         let total = t.lines.count
-        let tuning = FillConfig.tuning
         guard Self.shouldFill(elapsed: Date().timeIntervalSince(lastFillAttemptAt),
                               newLines: total - lastProcessedLineCount,
-                              pending: t.pendingTranscriptions,
-                              tuning: tuning) else { return }
+                              pending: t.pendingTranscriptions) else { return }
 
         inFlight = true
         lastFillAttemptAt = Date()
@@ -106,8 +108,12 @@ final class AgendaFiller {
         // a transient engine error would permanently drop these lines from the
         // live agenda (only finalize() would ever see them again).
         let newLines = Array(t.lines[lastProcessedLineCount..<total])
+        // A few already-processed lines ride along as routing context, so a
+        // snippet that opens mid-thought is filed by what preceded it.
+        let contextStart = max(0, lastProcessedLineCount - Self.contextLineCount)
+        let contextLines = Array(t.lines[contextStart..<lastProcessedLineCount])
 
-        if await runIncremental(newLines: newLines) {
+        if await runIncremental(newLines: newLines, contextLines: contextLines) {
             lastProcessedLineCount = total
         }
     }
@@ -115,13 +121,14 @@ final class AgendaFiller {
     /// Append the new bullets the snippet produced to their sections; leave the
     /// rest untouched. Returns false on engine failure so the caller can retry
     /// the same delta next tick.
-    private func runIncremental(newLines: [TranscriptLine]) async -> Bool {
+    private func runIncremental(newLines: [TranscriptLine], contextLines: [TranscriptLine]) async -> Bool {
         guard let t = transcriber, let snapshot = t.agenda else { return false }
 
         let result: AgendaFillResult
         do {
-            let engine = try FillConfig.makeFillEngine()
-            result = try await engine.fillAgendaIncremental(agenda: snapshot, newTranscript: newLines)
+            let engine = try AnthropicEngine.fromStorage()
+            result = try await engine.fillAgendaIncremental(agenda: snapshot, newTranscript: newLines,
+                                                            contextLines: contextLines)
         } catch {
             transcriber?.agendaFillState = .error((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
             return false
@@ -199,7 +206,7 @@ final class AgendaFiller {
     private func runFill(agenda: inout Agenda, transcript: [TranscriptLine], mode: AgendaFillMode) async {
         let result: AgendaFillResult
         do {
-            let engine = try FillConfig.makeFillEngine()
+            let engine = try AnthropicEngine.fromStorage()
             result = try await engine.fillAgenda(agenda: agenda, transcript: transcript, mode: mode)
         } catch {
             // Surface connection/model errors so the UI isn't silently empty.

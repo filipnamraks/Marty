@@ -542,12 +542,12 @@ struct ExportView: View {
         status = .working
         Task {
             do {
-                // 1. Ask the local model to interpret the instruction (if any) into folder + filename.
+                // 1. Ask Claude to interpret the instruction (if any) into folder + filename.
                 var folder = "Marty"
                 var filename = defaultName
                 if !trimmedInstruction.isEmpty {
                     do {
-                        let engine = OllamaEngine.fromStorage()
+                        let engine = try AnthropicEngine.fromStorage()
                         let routing = try await engine.routeExport(
                             instruction: trimmedInstruction,
                             defaultFolder: folder,

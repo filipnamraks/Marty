@@ -6,23 +6,12 @@ struct SettingsView: View {
     var onConnectCalendar: () -> Void = {}
     @ObservedObject var calendar: CalendarStore
 
-    @State private var draftModel: String = LocalLLM.draftModel
-    @State private var refineModel: String = LocalLLM.refineModel
-    @State private var baseURL: String = LocalLLM.baseURLString
     @State private var whisperModel: String = WhisperConfig.model
     @State private var whisperLanguage: String = WhisperConfig.languageSetting
-    @State private var ollamaStatus: OllamaStatus = .idle
     @State private var nameField: String = ""
-    @State private var fillEngine: FillEngineKind = FillConfig.engine
     @State private var apiKeyField: String = ""
     @State private var keyStatus: KeyCheckStatus = .idle
     @Bindable private var profile: UserProfile = .shared
-
-    enum OllamaStatus: Equatable {
-        case idle, checking
-        case ok(version: String, missing: [String])
-        case unreachable
-    }
 
     enum KeyCheckStatus: Equatable {
         case idle, checking, valid, invalid, offline
@@ -57,8 +46,7 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 profileSection
-                agendaFillSection
-                localModelSection
+                intelligenceSection
                 transcriptionSection
                 googleCalendarSection
                 notionSection
@@ -83,48 +71,37 @@ struct SettingsView: View {
         }
     }
 
-    private var agendaFillSection: some View {
+    private var intelligenceSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            fieldLabel("AGENDA FILLS")
-            Picker("", selection: $fillEngine) {
-                Text("Cloud (Claude)").tag(FillEngineKind.cloud)
-                Text("Local (Ollama)").tag(FillEngineKind.local)
+            fieldLabel("INTELLIGENCE (CLAUDE)")
+            HStack(spacing: 10) {
+                Text("API key")
+                    .font(.ui(12)).foregroundStyle(Theme.inkSoft)
+                    .frame(width: 84, alignment: .leading)
+                SecureField("sk-ant-…", text: $apiKeyField)
+                    .textFieldStyle(.plain).font(.mono(12))
+                    .padding(8)
+                    .background(Theme.sidebar)
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-
-            if fillEngine == .cloud {
-                HStack(spacing: 10) {
-                    Text("API key")
-                        .font(.ui(12)).foregroundStyle(Theme.inkSoft)
-                        .frame(width: 84, alignment: .leading)
-                    SecureField("sk-ant-…", text: $apiKeyField)
-                        .textFieldStyle(.plain).font(.mono(12))
-                        .padding(8)
-                        .background(Theme.sidebar)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                HStack(spacing: 12) {
-                    Button(action: checkAPIKey) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "key.horizontal").font(.system(size: 12))
-                            Text("Test key").font(.ui(12, weight: .medium))
-                        }
-                        .padding(.horizontal, 14).padding(.vertical, 7)
-                        .background(Theme.sidebar)
-                        .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                        .clipShape(Capsule())
-                        .foregroundStyle(Theme.ink)
+            HStack(spacing: 12) {
+                Button(action: checkAPIKey) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "key.horizontal").font(.system(size: 12))
+                        Text("Test key").font(.ui(12, weight: .medium))
                     }
-                    .buttonStyle(.plain)
-                    .disabled(keyStatus == .checking || apiKeyField.trimmingCharacters(in: .whitespaces).isEmpty)
-                    keyBadge
+                    .padding(.horizontal, 14).padding(.vertical, 7)
+                    .background(Theme.sidebar)
+                    .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
+                    .clipShape(Capsule())
+                    .foregroundStyle(Theme.ink)
                 }
-                caption("Live fills go to Claude (\(CloudLLM.defaultLiveModel)) — only transcript text is sent, never audio. Zero local GPU/RAM, so transcription never lags. Roughly $0.30–0.60 per meeting hour.")
-            } else {
-                caption("Live fills run fully on-device through Ollama. Heads-up: the local model holds ~7 GB of memory during the meeting and pauses while transcription is busy.")
+                .buttonStyle(.plain)
+                .disabled(keyStatus == .checking || apiKeyField.trimmingCharacters(in: .whitespaces).isEmpty)
+                keyBadge
             }
+            caption("Agenda fills, summaries and cleanup run on Claude (\(CloudLLM.defaultLiveModel) live, \(CloudLLM.defaultRefineModel) polish) — only transcript text is sent, never audio. Roughly $0.30–0.60 per meeting hour.")
         }
     }
 
@@ -152,52 +129,10 @@ struct SettingsView: View {
         }
     }
 
-    private var localModelSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            fieldLabel("LOCAL MODEL (OLLAMA)")
-            caption("On-device models through Ollama — used when agenda fills are set to Local, and for post-meeting summaries and transcript cleanup. Install Ollama and pull the models below.")
-
-            modelField(title: "Live draft", text: $draftModel)
-            modelField(title: "Final polish", text: $refineModel)
-
-            DisclosureGroup("Advanced") {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("OLLAMA URL").font(.mono(9)).tracking(1.4).foregroundStyle(Theme.inkMuted)
-                    TextField(LocalLLM.defaultBaseURL, text: $baseURL)
-                        .textFieldStyle(.plain).font(.mono(12))
-                        .padding(8)
-                        .background(Theme.sidebar)
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.stroke, lineWidth: 1.5))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-                .padding(.top, 6)
-            }
-            .font(.ui(12))
-            .tint(Theme.inkSoft)
-
-            HStack(spacing: 12) {
-                Button(action: checkOllama) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "bolt.horizontal.circle").font(.system(size: 12))
-                        Text("Check Ollama").font(.ui(12, weight: .medium))
-                    }
-                    .padding(.horizontal, 14).padding(.vertical, 7)
-                    .background(Theme.sidebar)
-                    .overlay(Capsule().stroke(Theme.strokeBold, lineWidth: 1.5))
-                    .clipShape(Capsule())
-                    .foregroundStyle(Theme.ink)
-                }
-                .buttonStyle(.plain)
-                .disabled(ollamaStatus == .checking)
-                ollamaBadge
-            }
-        }
-    }
-
     private var transcriptionSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             fieldLabel("TRANSCRIPTION (WHISPERKIT)")
-            caption("On-device speech-to-text. Turbo is near large-v3 accuracy at a fraction of the cost — leaving more of the machine to the live agenda fills.")
+            caption("On-device speech-to-text — audio never leaves this Mac. Turbo is near large-v3 accuracy at a fraction of the cost.")
 
             modelField(title: "Whisper", text: $whisperModel,
                        placeholder: WhisperConfig.defaultModel,
@@ -220,8 +155,8 @@ struct SettingsView: View {
     }
 
     private func modelField(title: String, text: Binding<String>,
-                            placeholder: String = "gemma4:e2b",
-                            suggestions: [LocalModelOption] = LocalLLM.suggestions) -> some View {
+                            placeholder: String,
+                            suggestions: [LocalModelOption]) -> some View {
         HStack(spacing: 10) {
             Text(title)
                 .font(.ui(12)).foregroundStyle(Theme.inkSoft)
@@ -241,32 +176,6 @@ struct SettingsView: View {
             }
             .menuStyle(.borderlessButton)
             .frame(width: 24)
-        }
-    }
-
-    @ViewBuilder
-    private var ollamaBadge: some View {
-        switch ollamaStatus {
-        case .idle:
-            EmptyView()
-        case .checking:
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small)
-                Text("Checking…").font(.mono(11)).foregroundStyle(Theme.inkMuted)
-            }
-        case .ok(let version, let missing):
-            if missing.isEmpty {
-                HStack(spacing: 6) {
-                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.accentDeep)
-                    Text("Connected · v\(version) · models ready").font(.mono(11)).foregroundStyle(Theme.accentDeep)
-                }
-            } else {
-                Text("Connected, but not pulled: " + missing.map { "ollama pull \($0)" }.joined(separator: ", "))
-                    .font(.mono(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(3)
-            }
-        case .unreachable:
-            Text("Ollama not running — start it with `ollama serve`")
-                .font(.mono(11)).foregroundStyle(Color(red: 0.54, green: 0.29, blue: 0.24)).lineLimit(2)
         }
     }
 
@@ -376,13 +285,9 @@ struct SettingsView: View {
     }
 
     private func loadFromStorage() {
-        draftModel = LocalLLM.draftModel
-        refineModel = LocalLLM.refineModel
-        baseURL = LocalLLM.baseURLString
         whisperModel = WhisperConfig.model
         whisperLanguage = WhisperConfig.languageSetting
         nameField = profile.name
-        fillEngine = FillConfig.engine
         apiKeyField = SecureStorage.read(SecureStorage.anthropicAPIKey) ?? ""
     }
 
@@ -394,14 +299,9 @@ struct SettingsView: View {
     }
 
     private func persistModels() {
-        LocalLLM.draftModel = draftModel.trimmingCharacters(in: .whitespaces)
-        LocalLLM.refineModel = refineModel.trimmingCharacters(in: .whitespaces)
-        let url = baseURL.trimmingCharacters(in: .whitespaces)
-        LocalLLM.baseURLString = url.isEmpty ? LocalLLM.defaultBaseURL : url
         let whisper = whisperModel.trimmingCharacters(in: .whitespaces)
         WhisperConfig.model = whisper.isEmpty ? WhisperConfig.defaultModel : whisper
         WhisperConfig.languageSetting = whisperLanguage
-        FillConfig.engine = fillEngine
         // The key lives in the Keychain, never UserDefaults. Clearing the field
         // deletes the item.
         let key = apiKeyField.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -424,23 +324,6 @@ struct SettingsView: View {
                 case .invalid: keyStatus = .invalid
                 case .offline: keyStatus = .offline
                 }
-            }
-        }
-    }
-
-    private func checkOllama() {
-        persistModels()
-        ollamaStatus = .checking
-        Task {
-            let health = await OllamaEngine.fromStorage().checkHealth()
-            await MainActor.run {
-                guard health.reachable, let version = health.version else {
-                    ollamaStatus = .unreachable
-                    return
-                }
-                let want = [draftModel, refineModel].map { $0.trimmingCharacters(in: .whitespaces) }
-                let missing = want.filter { !$0.isEmpty && !health.installedModels.contains($0) }
-                ollamaStatus = .ok(version: version, missing: Array(Set(missing)))
             }
         }
     }
